@@ -83,6 +83,14 @@ def norm(s):
     return s
 
 
+def _why(e):
+    if isinstance(e, urllib.error.HTTPError):
+        return "HTTP %s %s" % (e.code, e.reason)
+    if isinstance(e, urllib.error.URLError):
+        return "URLError %s" % (e.reason,)
+    return "%s: %s" % (type(e).__name__, e)
+
+
 def read_config_lines(path):
     """# から始まる行と空行を落として返す。ファイルが無ければ空。"""
     try:
@@ -271,14 +279,22 @@ def utanet_once(title, members):
     取りに行けなかっただけの曲に「無い」と印を付けると、二度と調べ直さなくなる。
     「歌い出し」は読まずに捨てる。曲名・歌手名・IDだけを使う。
     """
+    url = UTANET_SEARCH % urllib.parse.quote(title)
     try:
-        page = fetch(UTANET_SEARCH % urllib.parse.quote(title))
+        page = fetch(url)
     except urllib.error.HTTPError as e:
-        return "error", "HTTP %s %s" % (e.code, e.reason)
-    except urllib.error.URLError as e:
-        return "error", "URLError %s" % (e.reason,)
+        if e.code in (404, 429, 503):
+            # 一度だけ、間を置いてやり直す。相手の気まぐれかもしれないので。
+            time.sleep(6.0)
+            try:
+                page = fetch(url)
+            except Exception as e2:
+                return "error", "%s → やり直しても %s / %s" % (
+                    _why(e), _why(e2), url)
+        else:
+            return "error", "%s / %s" % (_why(e), url)
     except Exception as e:
-        return "error", "%s: %s" % (type(e).__name__, e)
+        return "error", "%s / %s" % (_why(e), url)
 
     # 本当の検索結果は tbody.songlist-table-body の中だけ。
     # 横のランキング枠を拾わないよう、ここで切り出す。
@@ -491,18 +507,40 @@ def main():
     # 最初の1回だけ、歌ネットが何を返してくるかを確かめて出す。
     # 「見つからない」が続くとき、相手が拒否しているのか本当に無いのかを
     # 取り違えないため。
-    try:
-        probe = fetch(UTANET_SEARCH % urllib.parse.quote("コヨリニウム"))
-        pt = re.search(r"(?is)<title[^>]*>(.*?)</title>", probe)
-        has = "あり" if '<tbody class="songlist-table-body">' in probe else "なし"
-        print("  診断: %d文字 / title=%s / 検索結果の枠=%s"
-              % (len(probe), (strip_tags(pt.group(1))[:60] if pt else "なし"), has))
-        if has == "なし":
-            print("  診断: 枠が無い。先頭300文字 → %s"
-                  % re.sub(r"\s+", " ", strip_tags(probe))[:300])
-    except Exception as e:
-        print("  診断: 取りに行けなかった（%s: %s）" % (type(e).__name__, e))
-    time.sleep(PAUSE)
+    # 3通り試して、404の原因を切り分ける。
+    #   A 確実に当たる言葉        → これが通れば歌ネット自体は正常
+    #   B 既にリンクが付いている曲 → 普通の曲名でも404になるかを見る
+    #   C 今回うまくいかない曲     → 新しい曲名だけの問題かを見る
+    hit = next((x for x in songs if x.get("l")), None)
+    probes = [("A 確実に当たる言葉", "コヨリニウム")]
+    if hit:
+        probes.append(("B 既にリンクのある曲", hit["t"]))
+    if added:
+        probes.append(("C 今回だめだった曲", added[0]["t"]))
+    # D は C と同じ曲名を、空白を + で送る形にしたもの。
+    # ブラウザのフォームはこちらの形なので、違いが出るなら原因はここ。
+    if added:
+        probes.append(("D Cと同じ曲名を + で送る", added[0]["t"]))
+
+    for label, word in probes:
+        if label.startswith("D"):
+            url = UTANET_SEARCH % urllib.parse.quote_plus(word)
+        else:
+            url = UTANET_SEARCH % urllib.parse.quote(word)
+        try:
+            page = fetch(url)
+            pt = re.search(r"(?is)<title[^>]*>(.*?)</title>", page)
+            has = "あり" if '<tbody class="songlist-table-body">' in page else "なし"
+            print("  診断 %s「%s」: HTTP 200 / %d文字 / 枠=%s / title=%s"
+                  % (label, word, len(page), has,
+                     (strip_tags(pt.group(1))[:50] if pt else "なし")))
+            if has == "なし":
+                print("       中身 → %s" % re.sub(r"\s+", " ", strip_tags(page))[:200])
+        except Exception as e:
+            print("  診断 %s「%s」: %s" % (label, word, _why(e)))
+            print("       このURLをブラウザで開いてみてください:")
+            print("       %s" % url)
+        time.sleep(PAUSE)
 
     def utanet_apply(rec, loud):
         """見つかれば l を付ける。無いと分かったときだけ lx を付ける。"""
