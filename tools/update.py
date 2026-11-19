@@ -284,9 +284,14 @@ def utanet_once(title, members):
     # 横のランキング枠を拾わないよう、ここで切り出す。
     body = re.search(r'(?s)<tbody class="songlist-table-body">(.*?)</tbody>', page)
     if not body:
-        # 0件のときもこの枠は出ないことがある。作りが変わった可能性もあるので
-        # 「無い」と断定せず、不在として返すだけにする。
-        return "none", None
+        # 検索結果の枠そのものが無い。こういうページは
+        #   ・拒否された / 何かのお知らせページを返された
+        #   ・ページの作りが変わった
+        # のどちらかで、「この曲は歌ネットに無い」という意味ではない。
+        # ここで "none" を返すと、読めなかっただけの曲に永久の印が付く。
+        t = re.search(r"(?is)<title[^>]*>(.*?)</title>", page)
+        return "error", ("検索結果の枠が無い / %d文字 / title=%s"
+                         % (len(page), (strip_tags(t.group(1))[:60] if t else "なし")))
     body = body.group(1)
 
     want_t = norm(title)
@@ -482,6 +487,22 @@ def main():
     print("\n[3] 歌ネットで歌詞ページを探す")
     got = filled = u_err = 0
     streak = 0
+
+    # 最初の1回だけ、歌ネットが何を返してくるかを確かめて出す。
+    # 「見つからない」が続くとき、相手が拒否しているのか本当に無いのかを
+    # 取り違えないため。
+    try:
+        probe = fetch(UTANET_SEARCH % urllib.parse.quote("コヨリニウム"))
+        pt = re.search(r"(?is)<title[^>]*>(.*?)</title>", probe)
+        has = "あり" if '<tbody class="songlist-table-body">' in probe else "なし"
+        print("  診断: %d文字 / title=%s / 検索結果の枠=%s"
+              % (len(probe), (strip_tags(pt.group(1))[:60] if pt else "なし"), has))
+        if has == "なし":
+            print("  診断: 枠が無い。先頭300文字 → %s"
+                  % re.sub(r"\s+", " ", strip_tags(probe))[:300])
+    except Exception as e:
+        print("  診断: 取りに行けなかった（%s: %s）" % (type(e).__name__, e))
+    time.sleep(PAUSE)
 
     def utanet_apply(rec, loud):
         """見つかれば l を付ける。無いと分かったときだけ lx を付ける。"""
