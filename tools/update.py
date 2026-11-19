@@ -210,14 +210,21 @@ def learn(songs):
 
     # データにまだ1曲も無い新メンバーを足す
     extra_mem = 0
+    mem_info = {}          # 名前 → {"gen":…, "ord":…}
     for ln in read_config_lines(MEMBERS_TXT):
         parts = [x.strip() for x in ln.split(",")]
         if len(parts) >= 2 and parts[0]:
             mem_branch[parts[0]] = parts[1]
             mem_scope[parts[0]] = parts[2] if len(parts) > 2 and parts[2] else "jp"
+            info = {}
+            if len(parts) > 3 and parts[3]:
+                info["gen"] = parts[3]
+            if len(parts) > 4 and parts[4].lstrip("-").isdigit():
+                info["ord"] = int(parts[4])
+            mem_info[parts[0]] = info
             extra_mem += 1
 
-    return known_ch, mem_branch, mem_scope, len(extra_ch), extra_mem
+    return known_ch, mem_branch, mem_scope, len(extra_ch), extra_mem, mem_info
 
 
 # ──────────────────── ホロ曲DB の一覧を読む ────────────────────
@@ -382,6 +389,108 @@ def itunes_lookup(title, members):
 
 # ──────────────────────────── 集計 ────────────────────────────
 
+def fold_solo_versions(data, loud=True):
+    """
+    「◯◯ SOLO ver.」のように、人の名前が入った別バージョンを、本体の曲に畳む。
+
+    同じ曲が人数ぶん並ぶのを避けるため。畳んだ側は曲としては消えるが、
+    その子だけが歌っている動画へのリンクは本体の sv に残すので、辿れる。
+
+    畳む条件は「歌っている人の名前が、曲名の飾りの部分に入っていること」。
+      神ツモ☆ドラドラ伝説 (白上フブキ SOLO ver.)  → 畳む（白上フブキが飾りにいる）
+      Everlasting knife Lo-fi ver.             → 畳まない（人の名前が無い）
+      スキスキDie… – TeddyLoid Neon Noir Remix   → 畳まない（同上）
+    何度走らせても同じ結果になる（既に畳んだものは対象にならない）。
+    """
+    songs = data["songs"]
+    by_title = {}
+    for x in songs:
+        by_title.setdefault(norm(x["t"]), []).append(x)
+
+    folded = []
+    for x in list(songs):
+        mem = x.get("m") or []
+        if len(mem) != 1:
+            continue
+        b = base_title(x["t"])
+        if not b:
+            continue
+        who = norm(mem[0])
+        if not who or who in norm(b) or who not in norm(x["t"]):
+            continue               # 飾りの部分に名前が無いなら別の曲
+        host = next((h for h in by_title.get(norm(b), []) if h is not x), None)
+        if host is None:
+            continue               # 本体が無いなら、そのまま1曲として残す
+        sv = host.setdefault("sv", [])
+        if not any(e.get("v") == x["v"] for e in sv):
+            sv.append({"n": mem[0], "v": x["v"]})
+        songs.remove(x)
+        by_title[norm(x["t"])].remove(x)
+        folded.append((x["t"], host["t"]))
+        if loud:
+            print("  畳んだ: %s → %s" % (x["t"], host["t"]))
+
+    # 本体のメンバーの並び順に合わせて並べ替える
+    for h in songs:
+        if h.get("sv"):
+            order = {n: i for i, n in enumerate(h.get("m") or [])}
+            h["sv"].sort(key=lambda e: order.get(e["n"], 99))
+    return folded
+
+
+def fix_roster(data, mem_branch, mem_info, loud=True):
+    """
+    メンバー一覧（roster）を曲の実態に合わせる。
+      ・各メンバーの曲数を数え直す
+      ・曲に出てくるのに一覧にいない人を足す
+    ここを忘れると、曲は増えたのにメンバーから探せない、という穴があく。
+    """
+    songs = data["songs"]
+    roster = data.setdefault("roster", [])
+    actual = {}
+    for s in songs:
+        for m in (s.get("m") or []):
+            actual[m] = actual.get(m, 0) + 1
+
+    fixed = 0
+    for r in roster:
+        n = actual.get(r["name"], 0)
+        if r.get("count") != n:
+            if loud:
+                print("  曲数を直した: %-18s %s → %d" % (r["name"], r.get("count"), n))
+            r["count"] = n
+            fixed += 1
+
+    have = {r["name"] for r in roster}
+    # 支部ごとの一番後ろの並び順。新しい人の置き場所を決めるのに使う。
+    tail = {}
+    for r in roster:
+        tail[r["branch"]] = max(tail.get(r["branch"], 0), r.get("ord", 0))
+
+    added = []
+    for name in sorted(actual, key=lambda n: -actual[n]):
+        if name in have:
+            continue
+        br = mem_branch.get(name) or "JP"
+        info = mem_info.get(name, {})
+        if "ord" in info:
+            o = info["ord"]
+        else:
+            o = tail.get(br, 0) + 1
+            tail[br] = o
+        roster.append({"name": name, "branch": br, "count": actual[name],
+                       "gen": info.get("gen", "そのほか"), "ord": o})
+        added.append(name)
+        if loud:
+            mark = "" if info else "（期生の指定が無いので「そのほか」に置いた）"
+            print("  一覧に足した: %s / %s / %d曲 / 並び順%d %s"
+                  % (name, br, actual[name], o, mark))
+
+    # 並び順で整える。支部ごとの番号帯が重ならないので、これで支部も期生もまとまる。
+    roster.sort(key=lambda r: (r.get("ord", 0), r["name"]))
+    return fixed, added
+
+
 def recount(data):
     songs = data["songs"]
     meta = data["meta"]
@@ -416,7 +525,7 @@ def main():
     bytes_before = len(src)
     print("今のデータ: %d曲 / 最終更新 %s" % (len(songs), data["meta"].get("updated")))
 
-    known_ch, mem_branch, mem_scope, n_ch, n_mem = learn(songs)
+    known_ch, mem_branch, mem_scope, n_ch, n_mem, mem_info = learn(songs)
     print("学習: チャンネル %d種 / メンバー %d人分の支部"
           % (len(known_ch), len(mem_branch)))
     print("      （うち手で許可したチャンネル %d件 / 手で足したメンバー %d人）"
@@ -648,9 +757,19 @@ def main():
         # 日付だけで並べ替える。Pythonの並べ替えは安定なので、同じ日の曲の
         # 既存の順番は保たれる。差分を無駄に大きくしないため。
         songs.sort(key=lambda s: s.get("d") or "", reverse=True)
+    print("\n[5] 同じ曲の別バージョンを畳む")
+    folded = fold_solo_versions(data)
+    if not folded:
+        print("  畳むものなし")
+
+    print("\n[6] メンバー一覧をそろえる")
+    n_fixed, n_added = fix_roster(data, mem_branch, mem_info)
+    if not n_fixed and not n_added:
+        print("  直すところなし")
+
     meta = recount(data)
 
-    print("\n[5] まとめ")
+    print("\n[7] まとめ")
     print("  追加: %d曲 / 保留: %d曲 / 曲名重複で見送り: %d曲"
           % (len(added), len(hold), len(dup)))
     print("  合計 %d曲 / コール 確定%d・公式まで%d・推定まで%d"
@@ -664,15 +783,16 @@ def main():
         print("（本番にするには --apply を付けて走らせます）")
         return 0
 
-    if not (added or got or filled or a_got or a_date):
+    if not (added or got or filled or a_got or a_date or n_fixed or n_added or folded):
         print("\n変わったところが無いので、書き換えません。")
         return 0
 
     # ── 安全装置 ──
     # 無人で走るので、おかしな結果をそのまま公開しないように止める。
-    if len(songs) < n_before:
-        print("\n!! 曲数が %d から %d に減った。ありえないので中止する。"
-              % (n_before, len(songs)))
+    # 畳んだぶんは正当な減少。それ以外で減っていたらおかしいので止める。
+    if len(songs) < n_before - len(folded):
+        print("\n!! 曲数が %d から %d に減った（畳んだのは%d曲）。"
+              "説明がつかないので中止する。" % (n_before, len(songs), len(folded)))
         return 1
     if not data["meta"].get("range", [""])[0]:
         print("\n!! 日付の範囲が空になった。中止する。")
