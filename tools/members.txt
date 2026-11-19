@@ -1,0 +1,13 @@
+# メンバー名 → 支部, 範囲
+#
+# 支部は JP / EN / ID / DEV のどれか。範囲は jp か intl。
+# index.html に1曲も無い新メンバーだけ、ここに書けばよい。
+# 既にいるメンバーは、1,079曲のデータから自動で学習するので書かなくてよい。
+#
+# 2026-11-19 アソビ★まわり隊！（2026年9月デビュー）
+# 根拠: YouTubeチャンネルが @hololive_ASOBIMAWARITAI で、
+#       ID支部（hololive-ID）やDEV_IS（ReGLOSS / FLOW GLOW）の命名ではない。
+百灯キョーコ,JP,jp
+熱千めら,JP,jp
+鈴鳴つづり,JP,jp
+宙科そぴあ,JP,jp
