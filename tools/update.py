@@ -37,6 +37,8 @@ UA = {
 }
 
 LIST_URL = "https://db.holoplayer.jp/song/list/"
+SETLIST_INDEX = "https://db.holoplayer.jp/feature/setlist/"
+SETLIST_BASE = "https://db.holoplayer.jp"
 OEMBED = "https://www.youtube.com/oembed?url=%s&format=json"
 UTANET_SEARCH = "https://www.uta-net.com/search/?Aselect=2&Bselect=3&Keyword=%s"
 ITUNES = ("https://itunes.apple.com/search?term=%s&country=jp"
@@ -388,6 +390,132 @@ def itunes_lookup(title, members):
 
 
 # ──────────────────────────── 集計 ────────────────────────────
+
+# ───────────────── フェスのセットリスト ─────────────────
+
+def parse_setlist(html):
+    """
+    ホロ曲DBのセットリストページ1枚を読む。
+    返すのは {"title":…, "stages":[{"name":…,"date":…,"songs":[…]}]}。
+    歌詞は無い（曲名・歌った人・曲順・動画IDだけ）。
+    """
+    body = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+
+    m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", body)
+    title = strip_tags(m.group(1)) if m else ""
+    title = re.sub(r"\s*セットリスト\s*$", "", title).strip()
+
+    # ページの後半には「ほかの全体ライブ」の日付が並ぶ。混ざらないよう切る。
+    cut = len(body)
+    for mark in ('id="others"', 'id="sources"', ">出典<"):
+        i = body.find(mark)
+        if i > 0:
+            cut = min(cut, i)
+    main = body[:cut]
+
+    # 公演の名前は、ページ上部の目次から取る（#stage-1 → 「hololive STAGE1」）
+    names = {}
+    for sid, label in re.findall(r'href="#(stage-\d+)"[^>]*>(.*?)</a>', body, re.S):
+        names.setdefault(sid, strip_tags(label))
+
+    # 公演の区切り
+    marks = [(m.start(), m.group(1))
+             for m in re.finditer(r'id="(stage-\d+)"', main)]
+    if not marks:
+        marks = [(0, "stage-1")]
+    marks.append((len(main), None))
+
+    stages = []
+    for idx in range(len(marks) - 1):
+        a, sid = marks[idx]
+        b = marks[idx + 1][0]
+        chunk = main[a:b]
+        songs = []
+        for li in re.findall(
+                r'(?is)<li class="break-inside-avoid[^"]*">(.*?)</li>', chunk):
+            t = re.search(r'(?is)<div class="text-sm"[^>]*>(.*?)</div>', li)
+            if not t:
+                continue
+            name = strip_tags(t.group(1))
+            if not name:
+                continue
+            no = re.search(r'(?is)<span class="w-6[^"]*">\s*(\d+)\s*</span>', li)
+            vid = re.search(r'img\.youtube\.com/vi/([A-Za-z0-9_-]{11})/', li)
+            who = re.search(r'(?is)<div class="text-xs text-ink/60"[^>]*>(.*?)</div>', li)
+            rec = {"n": int(no.group(1)) if no else len(songs) + 1, "t": name}
+            w = strip_tags(who.group(1)) if who else ""
+            w = re.sub(r"\s*\n\s*", "、", w).strip()
+            if w:
+                rec["by"] = w
+            if vid:
+                rec["v"] = vid.group(1)
+            songs.append(rec)
+        if not songs:
+            continue
+        d = re.search(r"(20\d\d)/(\d{1,2})/(\d{1,2})", chunk)
+        stages.append({
+            "name": names.get(sid) or ("公演%d" % (len(stages) + 1)),
+            "date": ("%s-%02d-%02d" % (d.group(1), int(d.group(2)), int(d.group(3))))
+                    if d else "",
+            "songs": songs,
+        })
+    return {"title": title, "stages": stages}
+
+
+def update_setlists(data, loud=True):
+    """
+    フェスのセットリスト一覧を見に行き、まだ持っていないフェスを取り込む。
+    一度取り込んだフェスは二度と取りに行かない（セトリは後から変わらない）。
+    新しいフェスのページができれば、次の週に自動で入る。
+    """
+    fes = data.setdefault("fes", [])
+    have = {f["key"] for f in fes}
+    try:
+        idx = fetch(SETLIST_INDEX)
+    except Exception as e:
+        print("  !! 一覧を取りに行けなかった（%s）。今回は何もしない" % _why(e))
+        return []
+
+    keys = []
+    for href in dict.fromkeys(re.findall(r'href="(/feature/setlist/([^"/]+)/)"', idx)):
+        path, key = href
+        keys.append((key, SETLIST_BASE + path))
+
+    added = []
+    for key, url in keys:
+        if key in have:
+            continue
+        if not key.endswith("-fes"):
+            # 「Bloom,」などフェス以外。入れるかどうかは持ち主が決めること。
+            if loud:
+                print("  ・フェス以外なので見送り: %s" % key)
+            continue
+        try:
+            page = fetch(url)
+        except Exception as e:
+            print("  !! %s を取りに行けなかった（%s）" % (key, _why(e)))
+            continue
+        time.sleep(PAUSE)
+        got = parse_setlist(page)
+        if not got["stages"]:
+            print("  !! %s からセットリストを読み取れなかった。作りが変わった可能性" % key)
+            continue
+        fes.append({"key": key, "title": got["title"], "url": url,
+                    "stages": got["stages"]})
+        added.append(key)
+        if loud:
+            tot = sum(len(st["songs"]) for st in got["stages"])
+            print("  ○ %s ─ %s" % (key, got["title"]))
+            for st in got["stages"]:
+                print("      %s  %s  %d曲 / 1曲目: %s"
+                      % (st["date"] or "日付なし", st["name"],
+                         len(st["songs"]), st["songs"][0]["t"]))
+            print("      合計 %d曲" % tot)
+
+    # 開催日の古い順に並べる
+    fes.sort(key=lambda f: (f["stages"][0]["date"] if f["stages"] else ""))
+    return added
+
 
 def fold_solo_versions(data, loud=True):
     """
@@ -757,19 +885,24 @@ def main():
         # 日付だけで並べ替える。Pythonの並べ替えは安定なので、同じ日の曲の
         # 既存の順番は保たれる。差分を無駄に大きくしないため。
         songs.sort(key=lambda s: s.get("d") or "", reverse=True)
-    print("\n[5] 同じ曲の別バージョンを畳む")
+    print("\n[5] フェスのセットリスト")
+    new_fes = update_setlists(data)
+    allfes = data.get("fes", [])
+    print("  持っているフェス: %d件 / 今回入れた: %d件" % (len(allfes), len(new_fes)))
+
+    print("\n[6] 同じ曲の別バージョンを畳む")
     folded = fold_solo_versions(data)
     if not folded:
         print("  畳むものなし")
 
-    print("\n[6] メンバー一覧をそろえる")
+    print("\n[7] メンバー一覧をそろえる")
     n_fixed, n_added = fix_roster(data, mem_branch, mem_info)
     if not n_fixed and not n_added:
         print("  直すところなし")
 
     meta = recount(data)
 
-    print("\n[7] まとめ")
+    print("\n[8] まとめ")
     print("  追加: %d曲 / 保留: %d曲 / 曲名重複で見送り: %d曲"
           % (len(added), len(hold), len(dup)))
     print("  合計 %d曲 / コール 確定%d・公式まで%d・推定まで%d"
@@ -783,7 +916,8 @@ def main():
         print("（本番にするには --apply を付けて走らせます）")
         return 0
 
-    if not (added or got or filled or a_got or a_date or n_fixed or n_added or folded):
+    if not (added or got or filled or a_got or a_date or n_fixed or n_added
+            or folded or new_fes):
         print("\n変わったところが無いので、書き換えません。")
         return 0
 
