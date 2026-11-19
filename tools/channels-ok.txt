@@ -1,0 +1,14 @@
+# 追加を許可する YouTube チャンネル名
+#
+# ここに書いた名前のチャンネルは、index.html の中に前例が無くても
+# 新曲の追加を許可する。1行に1つ。# から始まる行と空行は無視する。
+#
+# 書き方は YouTube の oEmbed が返す author_name のとおりに、
+# 1文字も変えずに書くこと。週次更新のログの「知らないチャンネル「○○」」
+# に出た名前をそのまま貼れば合う。
+#
+# 2026-11-19 そうたさんの判断で追加
+Shirakami Fubuki - Topic
+Anya Melfissa - Topic
+Ichijou Ririka - Topic
+アソビ★まわり隊!
