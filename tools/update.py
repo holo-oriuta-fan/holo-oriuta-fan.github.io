@@ -396,70 +396,89 @@ def itunes_lookup(title, members):
 def parse_setlist(html):
     """
     ホロ曲DBのセットリストページ1枚を読む。
-    返すのは {"title":…, "stages":[{"name":…,"date":…,"songs":[…]}]}。
-    歌詞は無い（曲名・歌った人・曲順・動画IDだけ）。
+    返すのは {"title":…, "stages":[…], "diag":…}。
+    歌詞は扱わない（曲順・曲名・歌った人・動画IDだけ）。
+
+    タグの中で改行していたり属性の順番が違ったりしても外さないよう、
+    class は「その語を含むか」で見る。
     """
     body = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+    diag = []
 
     m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", body)
     title = strip_tags(m.group(1)) if m else ""
     title = re.sub(r"\s*セットリスト\s*$", "", title).strip()
 
-    # ページの後半には「ほかの全体ライブ」の日付が並ぶ。混ざらないよう切る。
+    # 公演の区切り
+    marks = [(m.start(), m.group(1))
+             for m in re.finditer(r'id\s*=\s*"(stage-\d+)"', body)]
+    diag.append("stage印 %d個" % len(marks))
+
+    # ページの後半には「ほかの全体ライブ」の日付が並ぶので切る。
+    # ただし最初の公演より前では切らない（切ると中身が消える）。
+    first = marks[0][0] if marks else 0
     cut = len(body)
-    for mark in ('id="others"', 'id="sources"', ">出典<"):
-        i = body.find(mark)
+    for mark in ('id="others"', 'id="sources"', "ほかの全体ライブ"):
+        i = body.find(mark, first + 1)
         if i > 0:
             cut = min(cut, i)
     main = body[:cut]
+    diag.append("本文 %d文字" % len(main))
 
-    # 公演の名前は、ページ上部の目次から取る（#stage-1 → 「hololive STAGE1」）
+    # 公演の名前は目次から（#stage-1 → 「hololive STAGE1」）
     names = {}
-    for sid, label in re.findall(r'href="#(stage-\d+)"[^>]*>(.*?)</a>', body, re.S):
+    for sid, label in re.findall(r'href\s*=\s*"#(stage-\d+)"[^>]*>(.*?)</a>', body, re.S):
         names.setdefault(sid, strip_tags(label))
 
-    # 公演の区切り
-    marks = [(m.start(), m.group(1))
-             for m in re.finditer(r'id="(stage-\d+)"', main)]
+    marks = [(a, sid) for a, sid in marks if a < cut]
     if not marks:
         marks = [(0, "stage-1")]
     marks.append((len(main), None))
 
+    LI = re.compile(r'(?is)<li[^>]*class="[^"]*break-inside-avoid[^"]*"[^>]*>(.*?)</li>')
+    TITLE = re.compile(r'(?is)<div[^>]*class="[^"]*\btext-sm\b[^"]*"[^>]*>(.*?)</div>')
+    NO = re.compile(r'(?is)<span[^>]*class="[^"]*\bw-6\b[^"]*"[^>]*>\s*(\d+)\s*</span>')
+    WHO = re.compile(r'(?is)<div[^>]*class="[^"]*text-ink/60[^"]*"[^>]*>(.*?)</div>')
+    VID = re.compile(r'img\.youtube\.com/vi/([A-Za-z0-9_-]{11})/')
+
+    total_li = len(LI.findall(main))
+    diag.append("曲の行 %d個" % total_li)
+
     stages = []
     for idx in range(len(marks) - 1):
         a, sid = marks[idx]
-        b = marks[idx + 1][0]
-        chunk = main[a:b]
+        chunk = main[a:marks[idx + 1][0]]
         songs = []
-        for li in re.findall(
-                r'(?is)<li class="break-inside-avoid[^"]*">(.*?)</li>', chunk):
-            t = re.search(r'(?is)<div class="text-sm"[^>]*>(.*?)</div>', li)
+        for li in LI.findall(chunk):
+            t = TITLE.search(li)
             if not t:
                 continue
             name = strip_tags(t.group(1))
             if not name:
                 continue
-            no = re.search(r'(?is)<span class="w-6[^"]*">\s*(\d+)\s*</span>', li)
-            vid = re.search(r'img\.youtube\.com/vi/([A-Za-z0-9_-]{11})/', li)
-            who = re.search(r'(?is)<div class="text-xs text-ink/60"[^>]*>(.*?)</div>', li)
-            rec = {"n": int(no.group(1)) if no else len(songs) + 1, "t": name}
-            w = strip_tags(who.group(1)) if who else ""
-            w = re.sub(r"\s*\n\s*", "、", w).strip()
+            rec = {"n": len(songs) + 1, "t": name}
+            no = NO.search(li)
+            if no:
+                rec["n"] = int(no.group(1))
+            w = WHO.search(li)
             if w:
-                rec["by"] = w
-            if vid:
-                rec["v"] = vid.group(1)
+                w = re.sub(r"\s+", " ", strip_tags(w.group(1))).strip()
+                if w:
+                    rec["by"] = w
+            v = VID.search(li)
+            if v:
+                rec["v"] = v.group(1)
             songs.append(rec)
         if not songs:
             continue
-        d = re.search(r"(20\d\d)/(\d{1,2})/(\d{1,2})", chunk)
+        d = re.search(r"(20\d\d)[/.-](\d{1,2})[/.-](\d{1,2})", chunk)
         stages.append({
             "name": names.get(sid) or ("公演%d" % (len(stages) + 1)),
             "date": ("%s-%02d-%02d" % (d.group(1), int(d.group(2)), int(d.group(3))))
                     if d else "",
             "songs": songs,
         })
-    return {"title": title, "stages": stages}
+    return {"title": title, "stages": stages, "diag": " / ".join(diag)}
 
 
 def update_setlists(data, loud=True):
@@ -498,7 +517,15 @@ def update_setlists(data, loud=True):
         time.sleep(PAUSE)
         got = parse_setlist(page)
         if not got["stages"]:
-            print("  !! %s からセットリストを読み取れなかった。作りが変わった可能性" % key)
+            print("  !! %s を読み取れなかった（%d文字 / %s / 見出し=%s）"
+                  % (key, len(page), got.get("diag", ""), got.get("title") or "なし"))
+            # 次に直すための手がかりを少しだけ出す
+            m = re.search(r'(?is)<li[^>]*break-inside-avoid.{0,600}', page)
+            if m:
+                print("     行の実物 → %s" % re.sub(r"\s+", " ", m.group(0))[:500])
+            else:
+                print("     break-inside-avoid が1つも無い。"
+                      "ページの作りが根本から変わっている可能性")
             continue
         fes.append({"key": key, "title": got["title"], "url": url,
                     "stages": got["stages"]})
@@ -698,6 +725,12 @@ def main():
           % (n_ch, n_mem, len(units)))
 
     by_vid = {s["v"]: s for s in songs if s.get("v")}
+    # 本体に畳んだソロ版の動画IDも「持っている」と見なす。
+    # そうしないと毎週また拾ってきて、毎週また畳む、の繰り返しになる。
+    for s in songs:
+        for e in (s.get("sv") or []):
+            if e.get("v"):
+                by_vid.setdefault(e["v"], s)
     by_title = {}
     for s in songs:
         by_title.setdefault(norm(s["t"]), []).append(s)
