@@ -1,0 +1,57 @@
+# ホロライブ オリ曲アーカイブ ─ 週次更新
+#
+# 毎週月曜の朝（日本時間 9:37）に走って、新曲を index.html に足す。
+# 手で走らせるときは Actions の画面から。そのときは既定で「下見だけ」なので、
+# 何も書き換わらない。本番にしたいときだけ apply を true にする。
+name: weekly
+
+on:
+  schedule:
+    - cron: '37 0 * * 1'      # 月曜 00:37 UTC = 日本時間 9:37
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: '実際に書き換える（falseなら下見だけ）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 更新する
+        id: run
+        run: |
+          # 定期実行のときは必ず本番。手動のときは指定に従う。
+          if [ "${{ github.event_name }}" = "schedule" ] \
+             || [ "${{ inputs.apply }}" = "true" ]; then
+            echo "::notice::本番モード（index.html を書き換える）"
+            python3 tools/update.py --apply
+          else
+            echo "::notice::下見モード（何も書き換えない）"
+            python3 tools/update.py
+          fi
+
+      - name: 変わっていたら保存して公開する
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "index.html に変化なし。何もしない。"
+            exit 0
+          fi
+          echo "--- 変化の大きさ ---"
+          git diff --shortstat -- index.html
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "週次更新: $(date -u +%Y-%m-%d)"
+          git push
+          echo "::notice::サイトを更新した。数十秒で反映される。"
