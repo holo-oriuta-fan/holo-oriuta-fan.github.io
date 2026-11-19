@@ -42,10 +42,18 @@ UTANET_SEARCH = "https://www.uta-net.com/search/?Aselect=2&Bselect=3&Keyword=%s"
 ITUNES = ("https://itunes.apple.com/search?term=%s&country=jp"
           "&media=music&entity=song&limit=5")
 
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CHANNELS_OK = os.path.join(HERE, "channels-ok.txt")
+MEMBERS_TXT = os.path.join(HERE, "members.txt")
+
 MAX_UTANET_NEW = 40      # 新曲の歌詞リンク探し
-MAX_UTANET_FILL = 25     # 既存曲の歌詞リンク埋め戻し
-MAX_ITUNES = 30          # Apple Music の配信日と直リンク
-PAUSE = 1.0              # 相手のサーバーに優しくするための間
+MAX_UTANET_FILL = 35     # 既存曲の歌詞リンク埋め戻し
+MAX_ITUNES = 25          # Apple Music（iTunesのAPIは毎分20回程度が目安）
+PAUSE = 1.0              # 歌ネットへの間隔
+PAUSE_APPLE = 3.0        # Apple への間隔。毎分20回を超えないように
+MAX_ERRORS = 5           # 続けてこの回数失敗したら、その相手は今回あきらめる
 
 
 # ───────────────────────────── 下請け ─────────────────────────────
@@ -74,9 +82,36 @@ def norm(s):
     return s
 
 
+def read_config_lines(path):
+    """# から始まる行と空行を落として返す。ファイルが無ければ空。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [ln.strip() for ln in f
+                    if ln.strip() and not ln.lstrip().startswith("#")]
+    except FileNotFoundError:
+        return []
+
+
 def strip_tags(s):
     s = re.sub(r"(?s)<[^>]*>", "", s)
     return htmllib.unescape(s).strip()
+
+
+def base_title(t):
+    """
+    「○○ (アキ・ローゼンタール SOLO ver.)」→「○○」
+    「○○ – TeddyLoid Neon Noir Remix」   →「○○」
+    「○○ Lo-fi ver.」                    →「○○」
+    別バージョンの歌詞は本体と同じなので、歌詞ページを探すときの二の矢に使う。
+    元の曲名と同じになるなら None を返す。
+    """
+    b = t
+    b = re.sub(r"\s*[(（][^()（）]*[)）]\s*$", "", b)
+    b = re.sub(r"\s+[-–—]\s+.*$", "", b)
+    b = re.sub(r"(?i)\s+[\w'-]*\s*ver\.?\s*$", "", b)
+    b = re.sub(r"(?i)\s+remix\s*$", "", b)
+    b = b.strip()
+    return b if b and b != t.strip() else None
 
 
 # ──────────────────── index.html から DATA を取り出す ────────────────────
@@ -146,7 +181,21 @@ def learn(songs):
         if s.get("s"):
             for m in mem:
                 mem_scope.setdefault(m, s["s"])
-    return known_ch, mem_branch, mem_scope
+
+    # 手で許可したチャンネルを足す
+    extra_ch = read_config_lines(CHANNELS_OK)
+    known_ch.update(extra_ch)
+
+    # データにまだ1曲も無い新メンバーを足す
+    extra_mem = 0
+    for ln in read_config_lines(MEMBERS_TXT):
+        parts = [x.strip() for x in ln.split(",")]
+        if len(parts) >= 2 and parts[0]:
+            mem_branch[parts[0]] = parts[1]
+            mem_scope[parts[0]] = parts[2] if len(parts) > 2 and parts[2] else "jp"
+            extra_mem += 1
+
+    return known_ch, mem_branch, mem_scope, len(extra_ch), extra_mem
 
 
 # ──────────────────── ホロ曲DB の一覧を読む ────────────────────
@@ -201,21 +250,25 @@ def channel_of(vid):
 
 # ──────────────────── 歌ネットで曲ページIDを探す ────────────────────
 
-def utanet_id(title, members):
+def utanet_once(title, members):
     """
-    曲名で検索して、曲ページIDを返す。見つからなければ None。
+    曲名で1回検索する。戻り値は ("ok", id) / ("none", None) / ("error", None)。
+    「見つからなかった」と「取りに行けなかった」を区別するのが肝。
+    取りに行けなかっただけの曲に「無い」と印を付けると、二度と調べ直さなくなる。
     「歌い出し」は読まずに捨てる。曲名・歌手名・IDだけを使う。
     """
     try:
         page = fetch(UTANET_SEARCH % urllib.parse.quote(title))
     except Exception:
-        return None
+        return "error", None
 
     # 本当の検索結果は tbody.songlist-table-body の中だけ。
     # 横のランキング枠を拾わないよう、ここで切り出す。
     body = re.search(r'(?s)<tbody class="songlist-table-body">(.*?)</tbody>', page)
     if not body:
-        return None
+        # 0件のときもこの枠は出ないことがある。作りが変わった可能性もあるので
+        # 「無い」と断定せず、不在として返すだけにする。
+        return "none", None
     body = body.group(1)
 
     want_t = norm(title)
@@ -235,32 +288,45 @@ def utanet_id(title, members):
         # ここで tr の残り（歌い出しを含む）は使わずに捨てる
 
     if not cands:
-        return None
+        return "none", None
     if len(cands) == 1:
-        return cands[0][0]
+        return "ok", cands[0][0]
     for sid, artists in cands:        # 歌手名が一致するものを選ぶ
         if artists & want_m:
-            return sid
-    return None                        # 決められないなら付けない
+            return "ok", sid
+    return "none", None                # 決められないなら付けない
+
+
+def utanet_id(title, members):
+    """曲名そのままで探し、駄目なら別バージョンの飾りを落として、もう一度。"""
+    st, sid = utanet_once(title, members)
+    if st != "none":
+        return st, sid
+    b = base_title(title)
+    if b:
+        time.sleep(PAUSE)
+        return utanet_once(b, members)
+    return "none", None
 
 
 # ──────────────────── Apple Music の配信日と直リンク ────────────────────
 
 def itunes_lookup(title, members):
+    """("ok", 配信日, 曲ID) / ("none", None, None) / ("error", None, None)"""
     who = members[0] if members else ""
     term = (title + " " + who).strip()
     try:
         res = fetch_json(ITUNES % urllib.parse.quote(term)).get("results", [])
     except Exception:
-        return None, None
+        return "error", None, None
     want = norm(title)
     for r in res:
         if norm(r.get("trackName", "")) != want:
             continue
         rel = (r.get("releaseDate") or "")[:10]
         tid = r.get("trackId")
-        return (rel or None), (str(tid) if tid else None)
-    return None, None
+        return "ok", (rel or None), (str(tid) if tid else None)
+    return "none", None, None
 
 
 # ──────────────────────────── 集計 ────────────────────────────
@@ -299,9 +365,11 @@ def main():
     bytes_before = len(src)
     print("今のデータ: %d曲 / 最終更新 %s" % (len(songs), data["meta"].get("updated")))
 
-    known_ch, mem_branch, mem_scope = learn(songs)
+    known_ch, mem_branch, mem_scope, n_ch, n_mem = learn(songs)
     print("学習: チャンネル %d種 / メンバー %d人分の支部"
           % (len(known_ch), len(mem_branch)))
+    print("      （うち手で許可したチャンネル %d件 / 手で足したメンバー %d人）"
+          % (n_ch, n_mem))
 
     by_vid = {s["v"]: s for s in songs if s.get("v")}
     by_title = {}
@@ -381,52 +449,87 @@ def main():
 
     # ── 4. 歌ネットの曲ページID ──
     print("\n[3] 歌ネットで歌詞ページを探す")
-    got = 0
-    for rec in added[:MAX_UTANET_NEW]:
-        sid = utanet_id(rec["t"], rec["m"])
+    got = filled = u_err = 0
+    streak = 0
+
+    def utanet_apply(rec, loud):
+        """見つかれば l を付ける。無いと分かったときだけ lx を付ける。"""
+        nonlocal u_err, streak
+        st, sid = utanet_id(rec["t"], rec.get("m") or [])
         time.sleep(PAUSE)
-        if sid:
+        if st == "ok":
             rec["l"] = sid
+            streak = 0
+            if loud:
+                print("  ○ %s → /song/%s/" % (rec["t"], sid))
+            return True
+        if st == "none":
+            rec["lx"] = 1          # 無いと確かめた印。来週は飛ばす
+            streak = 0
+            if loud:
+                print("  － %s → 見つからない" % rec["t"])
+            return False
+        # error: 印を付けない。来週また試す
+        u_err += 1
+        streak += 1
+        if loud:
+            print("  ! %s → 取りに行けなかった。印は付けない" % rec["t"])
+        return False
+
+    for rec in added[:MAX_UTANET_NEW]:
+        if streak >= MAX_ERRORS:
+            print("  !! 続けて%d回失敗。歌ネットは今回あきらめる" % MAX_ERRORS)
+            break
+        if utanet_apply(rec, True):
             got += 1
-            print("  ○ %s → /song/%s/" % (rec["t"], sid))
-        else:
-            rec["lx"] = 1          # 調べたが無かった印。来週は飛ばす
-            print("  － %s → 見つからない" % rec["t"])
 
     # lx が付いていない曲だけを順に試す。これで毎週少しずつ前へ進む。
     need = [s for s in songs if not s.get("l") and not s.get("lx")][:MAX_UTANET_FILL]
-    filled = 0
+    tried = 0
     for s in need:
-        sid = utanet_id(s["t"], s.get("m") or [])
-        time.sleep(PAUSE)
-        if sid:
-            s["l"] = sid
+        if streak >= MAX_ERRORS:
+            print("  !! 続けて%d回失敗。埋め戻しは今回ここまで" % MAX_ERRORS)
+            break
+        tried += 1
+        if utanet_apply(s, False):
             filled += 1
-        else:
-            s["lx"] = 1
     rest = sum(1 for s in songs if not s.get("l") and not s.get("lx"))
     print("  新曲で見つかった: %d件 / 既存曲の埋め戻し: %d件（%d件試した / 未着手あと%d件）"
-          % (got, filled, len(need), rest))
+          % (got, filled, tried, rest))
+    if u_err:
+        print("  取りに行けなかった: %d件（印を付けていないので来週また試す）" % u_err)
 
     # ── 5. Apple Music ──
     print("\n[4] Apple Music の配信日と直リンクを探す")
     pool = [s for s in songs if not s.get("am") and not s.get("amx")]
     targets = (added + pool)[:MAX_ITUNES]
-    a_got, a_date = 0, 0
+    a_got = a_date = a_err = a_tried = 0
+    a_streak = 0
     for s in targets:
-        rel, tid = itunes_lookup(s["t"], s.get("m") or [])
-        time.sleep(0.4)
+        if a_streak >= MAX_ERRORS:
+            print("  !! 続けて%d回失敗。Apple は今回あきらめる" % MAX_ERRORS)
+            break
+        a_tried += 1
+        st, rel, tid = itunes_lookup(s["t"], s.get("m") or [])
+        time.sleep(PAUSE_APPLE)
+        if st == "error":
+            a_err += 1
+            a_streak += 1
+            continue           # 印を付けない。来週また試す
+        a_streak = 0
         if tid:
             s["am"] = tid
             a_got += 1
         else:
-            s["amx"] = 1       # 調べたが無かった印
+            s["amx"] = 1       # 無いと確かめた印
         if rel and not s.get("r"):
             s["r"], s["rs"] = rel, "apple"
             a_date += 1
     a_rest = sum(1 for s in songs if not s.get("am") and not s.get("amx"))
     print("  直リンク %d件 / 配信日 %d件（%d件試した / 未着手あと%d件）"
-          % (a_got, a_date, len(targets), a_rest))
+          % (a_got, a_date, a_tried, a_rest))
+    if a_err:
+        print("  取りに行けなかった: %d件（印を付けていないので来週また試す）" % a_err)
 
     # ── 6. 反映 ──
     if added:
@@ -450,7 +553,7 @@ def main():
         print("（本番にするには --apply を付けて走らせます）")
         return 0
 
-    if not added and not got and not filled and not a_got:
+    if not (added or got or filled or a_got or a_date):
         print("\n変わったところが無いので、書き換えません。")
         return 0
 
