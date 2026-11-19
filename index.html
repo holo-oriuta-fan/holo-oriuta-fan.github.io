@@ -244,8 +244,40 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .snapshot a{color:var(--en);font-weight:700;text-underline-offset:3px}
 
 /* ── タイムライン ───────────────────────── */
+/* 年で飛ぶバー。ツールバーのすぐ下に貼りつく。
+   スマホではツールバーが固定されない（position:static）ので、
+   そのときは --tb が 0 になり、このバーが画面の一番上に貼りつく。 */
+#yearbar{
+  position:sticky;top:var(--tb,0px);z-index:25;
+  margin:0 -20px;padding:7px 20px;
+  background:var(--bg);border-bottom:1px solid var(--line);
+}
+#yearbar[hidden]{display:none}
+@supports (backdrop-filter:blur(1px)) and (background:color-mix(in srgb,red 50%,transparent)){
+  #yearbar{background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(12px)}
+}
+.yearbar-inner{
+  max-width:900px;margin:0 auto;display:flex;gap:7px;align-items:center;
+  overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+}
+.yearbar-inner::-webkit-scrollbar{display:none}
+.ylab{flex:0 0 auto;font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--faint)}
+.ybtn{
+  flex:0 0 auto;font-family:var(--font-mono);font-size:12.5px;font-weight:600;
+  color:var(--muted);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px;background:var(--surface);white-space:nowrap;
+  transition:border-color .12s,color .12s,background .12s;
+}
+.ybtn:hover{border-color:var(--faint);color:var(--ink)}
+.ybtn.on{background:var(--ink);border-color:var(--ink);color:var(--bg);font-weight:700}
+
+/* 年の位置を測るための、高さゼロの目印。
+   見出し自体は画面に貼りつくので、位置を測る基準には使えない
+   （貼りつくと全部同じ高さに重なってしまう）。貼りつかない印を別に置く。 */
+.yanchor{height:0;scroll-margin-top:var(--tby,57px)}
+
 .year{
-  position:sticky;top:var(--tb,57px);z-index:20;
+  position:sticky;top:var(--tby,57px);z-index:20;
   display:flex;align-items:baseline;gap:12px;
   padding:32px 0 10px;
   background:linear-gradient(180deg,var(--bg) 72%,transparent);
@@ -440,6 +472,10 @@ footer a{color:var(--muted)}
     </div>
   </div>
 
+  <nav id="yearbar" hidden aria-label="年で移動">
+    <div class="yearbar-inner" id="yearbar-inner"></div>
+  </nav>
+
   <div class="panel" id="panel" hidden>
     <div class="panel-head">
       <input id="member-search" type="search" placeholder="メンバー名でしぼりこみ…" aria-label="メンバー名を検索">
@@ -617,6 +653,9 @@ function render() {
 
   const frag = document.createDocumentFragment();
   years.forEach(({y, items}) => {
+    const anchor = el("div", "yanchor");
+    anchor.id = "y" + y;
+    frag.appendChild(anchor);
     const h = el("div", "year");
     h.appendChild(el("h2", null, y + "年"));
     h.appendChild(el("span", "yc", items.length + " 曲"));
@@ -627,7 +666,73 @@ function render() {
     frag.appendChild(list);
   });
   host.appendChild(frag);
+  buildYearBar(years.map(v => v.y));
 }
+
+/* ── 年で飛ぶバー ── */
+function buildYearBar(years) {
+  const bar = $("#yearbar"), host = $("#yearbar-inner");
+  host.textContent = "";
+  /* 年が1つしかないなら押す意味がないので出さない */
+  if (years.length < 2) {
+    bar.hidden = true;
+    syncStickyOffset();
+    return;
+  }
+  host.appendChild(el("span", "ylab", "年"));
+  years.forEach(y => {
+    const b = el("button", "ybtn", y);
+    b.type = "button";
+    b.dataset.y = y;
+    b.title = y + "年へ移動";
+    b.addEventListener("click", () => {
+      const h = document.getElementById("y" + y);
+      if (!h) return;
+      /* 1000曲ぶんの長い表なので、遠い年へなめらかに動かすと
+         何秒も流れ続けて着かない。遠いときは一瞬で飛ばす。 */
+      const far = Math.abs(h.getBoundingClientRect().top) > 2500;
+      h.scrollIntoView({behavior: far ? "auto" : "smooth", block: "start"});
+    });
+    host.appendChild(b);
+  });
+  bar.hidden = false;
+  syncStickyOffset();
+  markYear();
+}
+
+function stickLine() {
+  return parseFloat(getComputedStyle(document.documentElement)
+           .getPropertyValue("--tby")) || 0;
+}
+
+/* いま画面に出ている年を、バーの中で光らせる。
+   貼りつかない目印（.yanchor）の位置で判定する。 */
+let yearTick = 0;
+function markYear() {
+  const btns = [...document.querySelectorAll(".ybtn")];
+  if (!btns.length) return;
+  const line = stickLine() + 6;
+  let cur = null;
+  document.querySelectorAll(".yanchor").forEach(a => {
+    if (a.getBoundingClientRect().top <= line) cur = a.id.slice(1);
+  });
+  if (cur === null) cur = btns[0].dataset.y;
+  btns.forEach(b => {
+    const on = b.dataset.y === cur;
+    b.classList.toggle("on", on);
+    if (on) {
+      /* 押せる位置に見えていなければ、バーを横に送る */
+      const p = b.parentElement, L = b.offsetLeft, R = L + b.offsetWidth;
+      if (L < p.scrollLeft || R > p.scrollLeft + p.clientWidth) {
+        p.scrollTo({left: Math.max(0, L - p.clientWidth / 2), behavior: "smooth"});
+      }
+    }
+  });
+}
+window.addEventListener("scroll", () => {
+  if (yearTick) return;
+  yearTick = requestAnimationFrame(() => { yearTick = 0; markYear(); });
+}, {passive: true});
 
 /* 歌ネットを引くときのキーワードを作る。
    ♡ ☆ √ ⇄ のような飾り記号は、こちらと歌ネットで字が食い違うことがある
@@ -909,7 +1014,12 @@ function syncStickyOffset() {
   const tb = document.querySelector(".toolbar");
   if (!tb) return;
   const sticky = getComputedStyle(tb).position === "sticky";
-  document.documentElement.style.setProperty("--tb", sticky ? tb.offsetHeight + "px" : "0px");
+  const top = sticky ? tb.offsetHeight : 0;
+  document.documentElement.style.setProperty("--tb", top + "px");
+  /* 年の見出しは、ツールバーと年バーの両方の下に来るようにする */
+  const yb = document.getElementById("yearbar");
+  const yh = (yb && !yb.hidden) ? yb.offsetHeight : 0;
+  document.documentElement.style.setProperty("--tby", (top + yh) + "px");
 }
 syncStickyOffset();
 window.addEventListener("resize", syncStickyOffset);
