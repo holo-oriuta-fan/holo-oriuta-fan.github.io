@@ -271,6 +271,43 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .ybtn:hover{border-color:var(--faint);color:var(--ink)}
 .ybtn.on{background:var(--ink);border-color:var(--ink);color:var(--bg);font-weight:700}
 
+/* ── フェスのセットリスト ── */
+.feshead{padding:30px 0 6px}
+.feshead h2{
+  font-family:var(--font-display);font-weight:400;font-size:26px;margin:0 0 6px;
+  letter-spacing:.01em;line-height:1.35;
+}
+.fesmeta{font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.fesmeta .num{font-family:var(--font-mono)}
+.fesmeta a{color:var(--muted)}
+.stage{
+  margin:20px 0 0;border:1px solid var(--line);border-radius:14px;
+  background:var(--surface);overflow:hidden;
+}
+.stagehead{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding:13px 18px;border-bottom:1px solid var(--line);background:var(--surface-2);
+}
+.stagehead h3{font-size:15px;font-weight:700;margin:0}
+.stagehead .sub{font-family:var(--font-mono);font-size:12px;color:var(--muted)}
+.setlist{list-style:none;margin:0;padding:4px 0}
+.setlist li{
+  display:grid;grid-template-columns:40px minmax(0,1fr);gap:0 10px;
+  padding:7px 18px;align-items:baseline;
+}
+.setlist li + li{border-top:1px dotted var(--line)}
+.setlist .no{font-family:var(--font-mono);font-size:12px;color:var(--faint);text-align:right}
+.setlist .st{font-size:14.5px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}
+.setlist a.st{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line)}
+.setlist a.st:hover{border-bottom-color:var(--ink)}
+.setlist .sby{font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:1px}
+@media (max-width:560px){
+  .feshead h2{font-size:21px}
+  .setlist li{grid-template-columns:30px minmax(0,1fr);padding:7px 12px}
+  .stagehead{padding:11px 12px}
+  .setlist .st{font-size:14px}
+}
+
 .year{
   position:sticky;top:var(--tby,57px);z-index:20;
   display:flex;align-items:baseline;gap:12px;
@@ -438,7 +475,15 @@ footer a{color:var(--muted)}
   <div class="toolbar">
     <div class="toolbar-inner">
 
-      <div class="ctrl">
+      <div class="ctrl" id="view-row">
+        <span class="ctrl-label">みる</span>
+        <div class="seg" id="view" role="group" aria-label="表示の切り替え">
+          <button data-view="songs">曲の一覧</button>
+          <button data-view="fes">フェスのセトリ</button>
+        </div>
+      </div>
+
+      <div class="ctrl" id="row-branch">
         <span class="ctrl-label">支部</span>
         <div class="seg" id="mode" role="group" aria-label="支部の切り替え">
           <button data-mode="jp">日本</button>
@@ -448,7 +493,7 @@ footer a{color:var(--muted)}
         <span class="ctrl-end"><span class="result"><b id="shown">0</b> 曲</span></span>
       </div>
 
-      <div class="ctrl">
+      <div class="ctrl" id="row-filter">
         <span class="ctrl-label">しぼる</span>
         <button class="tool-btn" id="panel-toggle" aria-expanded="false">
           <span class="lbl-lg">メンバーで絞る</span><span class="lbl-sm">メンバー</span>
@@ -458,7 +503,7 @@ footer a{color:var(--muted)}
         <button class="tool-btn" id="group-toggle" aria-pressed="false">全体曲</button>
       </div>
 
-      <div class="ctrl">
+      <div class="ctrl" id="row-sort">
         <span class="ctrl-label">ならべる</span>
         <button class="tool-btn" id="basis-toggle">日付：MV公開日</button>
         <button class="tool-btn" id="order-toggle">新しい順</button>
@@ -486,6 +531,7 @@ footer a{color:var(--muted)}
   </div>
 
   <main id="results"></main>
+  <main id="fes" hidden></main>
 
   <footer>
     <p>非公式のファン制作アーカイブです。データ出典：<a href="https://music.vtuber-ch.com/original/?gname=%E3%83%9B%E3%83%AD%E3%83%A9%E3%82%A4%E3%83%96ALL" target="_blank" rel="noopener">VMusic Ch.</a>。配信日は<a href="https://music.apple.com/jp/" target="_blank" rel="noopener">Apple Music</a>で曲名とアーティストの一致を確認したものを優先し、無いぶんはホロライブ非公式wikiのディスコグラフィで補っています（<a href="https://music.youtube.com/" target="_blank" rel="noopener">YouTube Music</a>でも突き合わせ）。日付は各楽曲MVの初出動画の公開日。インスト版・ライブ版などの別バージョンは元の曲にまとめています。<b>飛び先は全曲、ホロライブ公式・支部公式・ユニット公式・所属ライバー本人チャンネルの動画であることをYouTube側に問い合わせて確認済みです</b>（各曲の下にチャンネル名を表示）。</p>
@@ -499,7 +545,11 @@ const BR = {JP:"ホロライブJP", DEV:"hololive DEV_IS", EN:"hololive English"
 const BRANCH_OF = {};
 DATA.roster.forEach(r => BRANCH_OF[r.name] = r.branch);
 
+const FES = DATA.fes || [];
+
 const state = {
+  view: "songs",         // "songs" = 曲の一覧 / "fes" = フェスのセトリ
+  fes: FES.length ? FES[FES.length - 1].key : null,   // 既定は一番新しいフェス
   mode: "jp",
   order: "desc",
   year: null,            // 年のボタンを押していないときは null（全部を日付順に出す）
@@ -627,6 +677,116 @@ function filtered(withYear) {
 const PLAY = '<svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0v12l10-6z" fill="currentColor"/></svg>';
 
 function render() {
+  if (state.view === "fes") { renderFes(); return; }
+  renderSongs();
+}
+
+/* ── フェスのセットリスト ── */
+const jdate = d => d ? d.replace(/-/g, "/") : "";
+
+function fesSpan(f) {
+  const d = [...new Set(f.dates || [])];
+  if (!d.length) return "";
+  if (d.length === 1) return jdate(d[0]);
+  return jdate(d[0]) + "〜" + jdate(d[d.length - 1]).slice(5);
+}
+
+function renderFes() {
+  /* バーはフェスの選択に使う */
+  buildFesBar();
+  $("#results").hidden = true;
+  const host = $("#fes");
+  host.hidden = false;
+  host.textContent = "";
+
+  const f = FES.find(x => x.key === state.fes) || FES[FES.length - 1];
+  if (!f) {
+    const e = el("div", "empty");
+    e.appendChild(el("p", "big", "セットリストがまだありません"));
+    host.appendChild(e);
+    $("#shown").textContent = "0";
+    return;
+  }
+
+  const total = f.stages.reduce((n, st) => n + st.songs.length, 0);
+  $("#shown").textContent = total.toLocaleString();
+
+  const head = el("div", "feshead");
+  head.appendChild(el("h2", null, f.title));
+  const meta = el("div", "fesmeta");
+  const span = fesSpan(f);
+  if (span) meta.appendChild(el("span", "num", span));
+  meta.appendChild(el("span", null, f.stages.length + "公演"));
+  meta.appendChild(el("span", null, total + "曲"));
+  if (f.url) {
+    const a = el("a", null, "出典：ホロ曲DB");
+    a.href = f.url; a.target = "_blank"; a.rel = "noopener";
+    meta.appendChild(a);
+  }
+  head.appendChild(meta);
+  host.appendChild(head);
+
+  f.stages.forEach(st => {
+    const box = el("div", "stage");
+    const h = el("div", "stagehead");
+    h.appendChild(el("h3", null, st.name));
+    const sub = [];
+    if (st.date) sub.push(jdate(st.date));
+    sub.push(st.songs.length + "曲");
+    h.appendChild(el("span", "sub", sub.join("　・　")));
+    box.appendChild(h);
+
+    const ol = el("ul", "setlist");
+    st.songs.forEach(x => {
+      const li = el("li");
+      li.appendChild(el("span", "no", String(x.n).padStart(2, "0")));
+      const right = el("div");
+      /* 動画IDを持っている曲だけリンクにする。
+         カバー曲やメドレーはこのアーカイブに無いので、文字のまま出す。 */
+      if (x.v) {
+        const a = el("a", "st", x.t);
+        a.href = "https://youtu.be/" + x.v;
+        a.target = "_blank"; a.rel = "noopener";
+        a.title = x.t + " をYouTubeで開く";
+        right.appendChild(a);
+      } else {
+        right.appendChild(el("div", "st", x.t));
+      }
+      if (x.by) right.appendChild(el("div", "sby", x.by));
+      li.appendChild(right);
+      ol.appendChild(li);
+    });
+    box.appendChild(ol);
+    host.appendChild(box);
+  });
+}
+
+function buildFesBar() {
+  const bar = $("#yearbar"), host = $("#yearbar-inner");
+  host.textContent = "";
+  if (!FES.length) { bar.hidden = true; syncStickyOffset(); return; }
+  host.appendChild(el("span", "ylab", "フェス"));
+  FES.forEach(f => {
+    /* 「hololive 5th fes. …」から「5th」だけ取り出して短く出す */
+    const m = f.key.match(/^(\d+(?:st|nd|rd|th))/);
+    const b = el("button", "ybtn", m ? m[1] : f.key);
+    b.type = "button";
+    b.title = f.title;
+    b.classList.toggle("on", f.key === state.fes);
+    b.addEventListener("click", () => {
+      state.fes = f.key;
+      renderFes();
+      window.scrollTo({top: 0, behavior: "auto"});
+    });
+    host.appendChild(b);
+  });
+  bar.hidden = false;
+  syncStickyOffset();
+}
+
+function renderSongs() {
+  $("#fes").hidden = true;
+  $("#results").hidden = false;
   /* 年バーに出す年は、年以外の条件だけで絞った結果から作る。
      そうしないと、年を選んだ瞬間にその年しかボタンが残らなくなる。 */
   const base = filtered(false);
@@ -958,6 +1118,31 @@ $("#basis-toggle").addEventListener("click", e => {
   render();
 });
 
+$("#view").addEventListener("click", e => {
+  const b = e.target.closest("button[data-view]");
+  if (!b) return;
+  state.view = b.dataset.view;
+  syncView();
+  render();
+  window.scrollTo({top: 0, behavior: "auto"});
+});
+
+/* フェスを見ているときは、曲の一覧用の絞り込みを隠す（使えないので） */
+function syncView() {
+  const fes = state.view === "fes";
+  document.querySelectorAll("#view button").forEach(b =>
+    b.setAttribute("aria-pressed", b.dataset.view === state.view));
+  ["row-branch", "row-filter", "row-sort"].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.hidden = fes;
+  });
+  const pn = $("#panel"); if (pn && fes) pn.hidden = true;
+  const ab = $("#active-bar"); if (ab && fes) ab.hidden = true;
+  const bn = $("#basis-note"); if (bn && fes) bn.hidden = true;
+  const pt = $("#panel-toggle"); if (pt && fes) pt.setAttribute("aria-expanded", "false");
+  syncStickyOffset();
+}
+
 $("#order-toggle").addEventListener("click", e => {
   state.order = state.order === "desc" ? "asc" : "desc";
   setOrderLabel();
@@ -978,7 +1163,7 @@ try {
     state.basis = saved.basis === "rel" ? "rel" : "mv";
   }
 } catch (_) {}
-setOrderLabel(); setBasisLabel();
+setOrderLabel(); setBasisLabel(); syncView();
 $("#solo-toggle").setAttribute("aria-pressed", state.soloOnly);
 $("#group-toggle").setAttribute("aria-pressed", state.groupOnly);
 $("#basis-note").hidden = state.basis !== "rel";
