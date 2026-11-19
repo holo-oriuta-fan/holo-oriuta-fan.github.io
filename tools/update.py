@@ -283,14 +283,17 @@ def utanet_once(title, members):
     try:
         page = fetch(url)
     except urllib.error.HTTPError as e:
-        if e.code in (404, 429, 503):
-            # 一度だけ、間を置いてやり直す。相手の気まぐれかもしれないので。
-            time.sleep(6.0)
+        if e.code == 404:
+            # 歌ネットは検索結果がゼロのとき404を返すらしい。
+            # つまりこれは障害ではなく「その曲名では当たらない」という答え。
+            # 障害として数えない。全体を打ち切る理由にもしない。
+            return "404", None
+        if e.code in (429, 503):
+            time.sleep(6.0)        # 混んでいるだけかもしれないので一度だけ待つ
             try:
                 page = fetch(url)
             except Exception as e2:
-                return "error", "%s → やり直しても %s / %s" % (
-                    _why(e), _why(e2), url)
+                return "error", "%s → やり直しても %s" % (_why(e), _why(e2))
         else:
             return "error", "%s / %s" % (_why(e), url)
     except Exception as e:
@@ -337,15 +340,22 @@ def utanet_once(title, members):
 
 
 def utanet_id(title, members):
-    """曲名そのままで探し、駄目なら別バージョンの飾りを落として、もう一度。"""
+    """
+    曲名そのままで探し、当たらなければ別バージョンの飾りを落として、もう一度。
+    「Everlasting knife Lo-fi ver.」が無くても「Everlasting knife」はある、
+    という場合をここで拾う。別バージョンの歌詞は本体と同じなので正しい。
+    """
     st, sid = utanet_once(title, members)
-    if st != "none":
+    if st in ("ok", "error"):
         return st, sid
-    b = base_title(title)
+    b = base_title(title)        # st は "none" か "404"
     if b:
         time.sleep(PAUSE)
-        return utanet_once(b, members)
-    return "none", None
+        st2, sid2 = utanet_once(b, members)
+        if st2 in ("ok", "error"):
+            return st2, sid2
+        return ("none", None) if "none" in (st, st2) else ("404", None)
+    return ("none", None) if st == "none" else ("404", None)
 
 
 # ──────────────────── Apple Music の配信日と直リンク ────────────────────
@@ -501,7 +511,7 @@ def main():
 
     # ── 4. 歌ネットの曲ページID ──
     print("\n[3] 歌ネットで歌詞ページを探す")
-    got = filled = u_err = 0
+    got = filled = u_err = u_404 = 0
     streak = 0
 
     # 最初の1回だけ、歌ネットが何を返してくるかを確かめて出す。
@@ -519,14 +529,14 @@ def main():
         probes.append(("C 今回だめだった曲", added[0]["t"]))
     # D は C と同じ曲名を、空白を + で送る形にしたもの。
     # ブラウザのフォームはこちらの形なので、違いが出るなら原因はここ。
+    probes.append(("E でたらめな言葉", "zzqqxxyy12345"))
     if added:
-        probes.append(("D Cと同じ曲名を + で送る", added[0]["t"]))
+        b = base_title(added[0]["t"])
+        if b:
+            probes.append(("F Cの飾りを落とした曲名", b))
 
     for label, word in probes:
-        if label.startswith("D"):
-            url = UTANET_SEARCH % urllib.parse.quote_plus(word)
-        else:
-            url = UTANET_SEARCH % urllib.parse.quote(word)
+        url = UTANET_SEARCH % urllib.parse.quote(word)
         try:
             page = fetch(url)
             pt = re.search(r"(?is)<title[^>]*>(.*?)</title>", page)
@@ -545,6 +555,7 @@ def main():
     def utanet_apply(rec, loud):
         """見つかれば l を付ける。無いと分かったときだけ lx を付ける。"""
         nonlocal u_err, streak
+        nonlocal u_404
         st, sid = utanet_id(rec["t"], rec.get("m") or [])
         time.sleep(PAUSE)
         if st == "ok":
@@ -554,12 +565,19 @@ def main():
                 print("  ○ %s → /song/%s/" % (rec["t"], sid))
             return True
         if st == "none":
-            rec["lx"] = 1          # 無いと確かめた印。来週は飛ばす
+            rec["lx"] = 1          # 枠はあったが一致しなかった＝無い
             streak = 0
             if loud:
                 print("  － %s → 見つからない" % rec["t"])
             return False
-        # error: 印を付けない。来週また試す
+        if st == "404":
+            rec["lx"] = 1          # 検索結果ゼロ＝歌ネットに無い
+            streak = 0             # 障害ではないので打ち切りに数えない
+            u_404 += 1
+            if loud:
+                print("  － %s → 歌ネットに無い（404）" % rec["t"])
+            return False
+        # error: 本当に取りに行けなかった。印は付けない。来週また試す
         u_err += 1
         streak += 1
         print("  ! %s → 取りに行けなかった（%s）。印は付けない" % (rec["t"], sid))
@@ -585,6 +603,8 @@ def main():
     rest = sum(1 for s in songs if not s.get("l") and not s.get("lx"))
     print("  新曲で見つかった: %d件 / 既存曲の埋め戻し: %d件（%d件試した / 未着手あと%d件）"
           % (got, filled, tried, rest))
+    if u_404:
+        print("  歌ネットに無かった: %d件（404。印を付けたので来週は飛ばす）" % u_404)
     if u_err:
         print("  取りに行けなかった: %d件（印を付けていないので来週また試す）" % u_err)
 
