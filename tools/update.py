@@ -425,6 +425,17 @@ def parse_setlist(html):
     main = body[:cut]
     diag.append("本文 %d文字" % len(main))
 
+    # 開催期間は、タイトルのすぐ下（最初の公演より前）に書いてある。
+    # 公演ごとの日付は 7th 以外には無く、どの公演が何日目かはページから
+    # 読み取れない。分からないものを推測で埋めない。
+    head = body[:first] if first else body[:4000]
+    dates = []
+    for y, mo, da in re.findall(r"(20\d\d)[/.-](\d{1,2})[/.-](\d{1,2})", head):
+        d = "%s-%02d-%02d" % (y, int(mo), int(da))
+        if d not in dates:
+            dates.append(d)
+    diag.append("開催日 %d個" % len(dates))
+
     # 公演の名前は目次から（#stage-1 → 「hololive STAGE1」）
     names = {}
     for sid, label in re.findall(r'href\s*=\s*"#(stage-\d+)"[^>]*>(.*?)</a>', body, re.S):
@@ -472,13 +483,16 @@ def parse_setlist(html):
         if not songs:
             continue
         d = re.search(r"(20\d\d)[/.-](\d{1,2})[/.-](\d{1,2})", chunk)
+        sd = ("%s-%02d-%02d" % (d.group(1), int(d.group(2)), int(d.group(3)))) if d else ""
+        if not sd and len(dates) == 1:
+            sd = dates[0]          # 1日だけの開催なら、その日で確定
         stages.append({
             "name": names.get(sid) or ("公演%d" % (len(stages) + 1)),
-            "date": ("%s-%02d-%02d" % (d.group(1), int(d.group(2)), int(d.group(3))))
-                    if d else "",
+            "date": sd,
             "songs": songs,
         })
-    return {"title": title, "stages": stages, "diag": " / ".join(diag)}
+    return {"title": title, "stages": stages, "dates": dates,
+            "diag": " / ".join(diag)}
 
 
 def update_setlists(data, loud=True):
@@ -528,11 +542,14 @@ def update_setlists(data, loud=True):
                       "ページの作りが根本から変わっている可能性")
             continue
         fes.append({"key": key, "title": got["title"], "url": url,
-                    "stages": got["stages"]})
+                    "dates": got.get("dates") or [], "stages": got["stages"]})
         added.append(key)
         if loud:
             tot = sum(len(st["songs"]) for st in got["stages"])
-            print("  ○ %s ─ %s" % (key, got["title"]))
+            dd = got.get("dates") or []
+            span = (dd[0] if len(dd) == 1
+                    else ("%s〜%s" % (dd[0], dd[-1]) if dd else "開催日なし"))
+            print("  ○ %s ─ %s（%s）" % (key, got["title"], span))
             for st in got["stages"]:
                 print("      %s  %s  %d曲 / 1曲目: %s"
                       % (st["date"] or "日付なし", st["name"],
@@ -540,7 +557,7 @@ def update_setlists(data, loud=True):
             print("      合計 %d曲" % tot)
 
     # 開催日の古い順に並べる
-    fes.sort(key=lambda f: (f["stages"][0]["date"] if f["stages"] else ""))
+    fes.sort(key=lambda f: (f.get("dates") or [""])[0])
     return added
 
 
