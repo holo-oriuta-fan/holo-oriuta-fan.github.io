@@ -517,6 +517,43 @@ def update_setlists(data, loud=True):
     return added
 
 
+def expand_units(data, units, loud=True):
+    """
+    「歌った人」が空で、アーティスト名がユニット名になっている曲を、
+    そのユニットのメンバーに開く。開かないと、メンバー名で絞り込んだとき
+    その曲が出てこない（例: FLOW GLOW の全体曲が、響咲リオナの一覧に出ない）。
+
+    アーティスト名（a）はそのまま残すので、表示では今までどおり
+    ユニット名が先に出る。
+    """
+    if not units:
+        return []
+    done = []
+    unknown = {}
+    for x in data["songs"]:
+        mem = x.get("m") or []
+        if mem and len(mem) > 1:
+            continue
+        who = x.get("a") or (mem[0] if mem else "")
+        if not who:
+            continue
+        key = unicodedata.normalize("NFKC", who)
+        if key not in units:
+            if not mem:
+                unknown[who] = unknown.get(who, 0) + 1
+            continue
+        x["m"] = list(units[key])
+        x["n"] = len(x["m"])
+        done.append((x["t"], who, len(x["m"])))
+        if loud:
+            print("  開いた: %-34s %s → %d人" % (x["t"][:34], who, len(x["m"])))
+    if loud and unknown:
+        print("  ※ 歌った人が空のままの曲（誰が歌ったか分からないので触っていない）:")
+        for a, n in sorted(unknown.items(), key=lambda kv: -kv[1]):
+            print("      %s … %d曲" % (a, n))
+    return done
+
+
 def fold_solo_versions(data, loud=True):
     """
     「◯◯ SOLO ver.」のように、人の名前が入った別バージョンを、本体の曲に畳む。
@@ -653,11 +690,12 @@ def main():
     bytes_before = len(src)
     print("今のデータ: %d曲 / 最終更新 %s" % (len(songs), data["meta"].get("updated")))
 
+    units = read_units()
     known_ch, mem_branch, mem_scope, n_ch, n_mem, mem_info = learn(songs)
     print("学習: チャンネル %d種 / メンバー %d人分の支部"
           % (len(known_ch), len(mem_branch)))
-    print("      （うち手で許可したチャンネル %d件 / 手で足したメンバー %d人）"
-          % (n_ch, n_mem))
+    print("      （うち手で許可したチャンネル %d件 / 手で足したメンバー %d人 / ユニット %d件）"
+          % (n_ch, n_mem, len(units)))
 
     by_vid = {s["v"]: s for s in songs if s.get("v")}
     by_title = {}
@@ -709,10 +747,6 @@ def main():
               % (r["d"], r["t"], "・".join(r["m"]) or "?", why))
 
     # ── 3. レコードを組み立てる ──
-    units = read_units()
-    if units:
-        print("  （ユニット表を %d件 読んだ）" % len(units))
-
     added = []
     for r in to_add:
         mem = r["m"]
@@ -890,19 +924,24 @@ def main():
     allfes = data.get("fes", [])
     print("  持っているフェス: %d件 / 今回入れた: %d件" % (len(allfes), len(new_fes)))
 
-    print("\n[6] 同じ曲の別バージョンを畳む")
+    print("\n[6] ユニット名を人数ぶんに開く")
+    opened = expand_units(data, units)
+    if not opened:
+        print("  開くものなし")
+
+    print("\n[7] 同じ曲の別バージョンを畳む")
     folded = fold_solo_versions(data)
     if not folded:
         print("  畳むものなし")
 
-    print("\n[7] メンバー一覧をそろえる")
+    print("\n[8] メンバー一覧をそろえる")
     n_fixed, n_added = fix_roster(data, mem_branch, mem_info)
     if not n_fixed and not n_added:
         print("  直すところなし")
 
     meta = recount(data)
 
-    print("\n[8] まとめ")
+    print("\n[9] まとめ")
     print("  追加: %d曲 / 保留: %d曲 / 曲名重複で見送り: %d曲"
           % (len(added), len(hold), len(dup)))
     print("  合計 %d曲 / コール 確定%d・公式まで%d・推定まで%d"
@@ -917,7 +956,7 @@ def main():
         return 0
 
     if not (added or got or filled or a_got or a_date or n_fixed or n_added
-            or folded or new_fes):
+            or folded or new_fes or opened):
         print("\n変わったところが無いので、書き換えません。")
         return 0
 
