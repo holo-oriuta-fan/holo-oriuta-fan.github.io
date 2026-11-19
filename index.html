@@ -203,16 +203,6 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .pill.b-EN{background:var(--en-bg);color:var(--en)}
 .pill.b-ID{background:var(--id-bg);color:var(--id)}
 
-/* コール曲トグル */
-.call-btn{
-  display:inline-flex;align-items:center;gap:7px;
-  padding:7px 13px;border:1px solid var(--line);border-radius:10px;
-  background:var(--surface);font-size:13px;font-weight:500;color:var(--ink-2);
-  transition:border-color .15s,color .15s,background .15s;
-}
-.call-btn:hover{border-color:var(--faint);color:var(--ink)}
-.call-btn[aria-pressed="true"]{background:var(--call-bg);border-color:transparent;color:var(--call);font-weight:700}
-.call-btn .ico{font-size:14px;line-height:1}
 
 .note{
   margin-top:14px;padding:13px 16px;border-radius:11px;
@@ -319,14 +309,6 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* 本文 */
 .title{font-size:17px;font-weight:700;line-height:1.45;margin:0 0 4px;overflow-wrap:anywhere;letter-spacing:.005em}
 .titlerow{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
-.badge{
-  display:inline-flex;align-items:center;gap:4px;
-  font-size:11.5px;font-weight:700;letter-spacing:.02em;
-  border-radius:20px;padding:1px 9px;line-height:1.6;white-space:nowrap;
-  color:var(--call);background:var(--call-bg);border:1px solid var(--call-line);
-}
-.badge.lv2{background:transparent}
-.badge.lv1{background:transparent;color:var(--faint);border-color:var(--line);font-weight:600}
 .by{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:13px;line-height:1.7}
 .by .unit{color:var(--muted);font-weight:600}
 .by .m{cursor:pointer;border-radius:5px;padding:0 3px;margin:0 -3px;font-weight:500}
@@ -403,7 +385,6 @@ footer a{color:var(--muted)}
     <p class="tagline">ホロライブのオリジナル曲を、公開された日付の順に並べています。メンバー名で絞り込めば、その子がいつ何を出したのかが一本の線で見えます。行をクリックするとYouTubeが開きます。日付はMV公開日と配信日を切り替えられます。</p>
     <div class="meta-line">
       <span><b id="m-total">0</b> 曲</span><span class="dot"></span>
-      <span>うちコール曲 <b id="m-calls">0</b></span><span class="dot"></span>
       <span>ソロ曲 <b id="m-solos">0</b></span><span class="dot"></span>
       <span>全体曲 <b id="m-groups">0</b></span><span class="dot"></span>
       <span><b id="m-range"></b></span><span class="dot"></span>
@@ -443,18 +424,6 @@ footer a{color:var(--muted)}
         </button>
         <button class="tool-btn" id="solo-toggle" aria-pressed="false">ソロ曲</button>
         <button class="tool-btn" id="group-toggle" aria-pressed="false">全体曲</button>
-        <button class="call-btn" id="call-toggle" aria-pressed="false">
-          <span class="ico" aria-hidden="true">📣</span>コール曲
-        </button>
-      </div>
-
-      <div class="ctrl" id="call-level-row" hidden>
-        <span class="ctrl-label">確度</span>
-        <div class="seg" id="call-level" role="group" aria-label="コール曲の確度">
-          <button data-lv="2">確定だけ</button>
-          <button data-lv="1">推定も含める</button>
-          <button data-lv="3">公式だけ</button>
-        </div>
       </div>
 
       <div class="ctrl">
@@ -480,16 +449,10 @@ footer a{color:var(--muted)}
     <b>配信日</b>は各曲がサブスク・ダウンロードで配信された日（シングル／アルバムの早い方）です。<b>Apple Music</b>で曲名とアーティストの両方が一致したものを最優先（<b id="basis-apple">0</b>曲）、残りはホロライブ非公式wiki（hololive.wiki）のディスコグラフィから取っています。あわせて<b id="basis-count">0</b>曲ぶん判明していて、残りは配信日が確認できないためMV公開日で表示しています。
   </div>
 
-  <div class="note" id="call-note" hidden>
-    <b>確定だけ</b>（<span id="cnt2">0</span>曲）… 実際に聴いて「コール曲」と判定した曲と、コールの資料が実在する曲。<br>
-    <b>推定も含める</b>（<span id="cnt1">0</span>曲）… 「たぶんコールが入る」どまりの曲も足す。<br>
-    <b>公式だけ</b>（<span id="cnt3">0</span>曲）… 公式のコール練習動画・Fanchant Guideがある曲だけ。
-  </div>
-
   <main id="results"></main>
 
   <footer>
-    <p>非公式のファン制作アーカイブです。データ出典：<a href="https://music.vtuber-ch.com/original/?gname=%E3%83%9B%E3%83%AD%E3%83%A9%E3%82%A4%E3%83%96ALL" target="_blank" rel="noopener">VMusic Ch.</a>／コール曲の判定は、ホロライブ公式・本人チャンネル・ユニット公式のコール練習動画／Cheering Guide／Fanchant Guide、<a href="https://ameblo.jp/zakki440/entrylist.html" target="_blank" rel="noopener">コール練習と雑記ブログ440</a>の全記事、SCGs（白上フブキ コール練習動画）、Nick (Aqua)・NiiNi Diesel（hololive English Chant Guide）、有志のコールまとめnote（AZKiコールまとめ／hololive 1st fes.コール情報）、各メンバーのソロライブ現地レポート（トワ1st・2nd／かなたLOCK ON／フブキFBKINGDOM／おかゆ2nd／すいせい1st／みこ1st／ぺこら1st／3期生きゅるるん大作戦）、および全967曲それぞれについてYouTubeを個別検索した結果を参照。配信日は<a href="https://music.apple.com/jp/" target="_blank" rel="noopener">Apple Music</a>で曲名とアーティストの一致を確認したものを優先し、無いぶんはホロライブ非公式wikiのディスコグラフィで補っています（<a href="https://music.youtube.com/" target="_blank" rel="noopener">YouTube Music</a>でも突き合わせ）。日付は各楽曲MVの初出動画の公開日。インスト版・ライブ版などの別バージョンは元の曲にまとめています。<b>飛び先は全曲、ホロライブ公式・支部公式・ユニット公式・所属ライバー本人チャンネルの動画であることをYouTube側に問い合わせて確認済みです</b>（各曲の下にチャンネル名を表示）。</p>
+    <p>非公式のファン制作アーカイブです。データ出典：<a href="https://music.vtuber-ch.com/original/?gname=%E3%83%9B%E3%83%AD%E3%83%A9%E3%82%A4%E3%83%96ALL" target="_blank" rel="noopener">VMusic Ch.</a>。配信日は<a href="https://music.apple.com/jp/" target="_blank" rel="noopener">Apple Music</a>で曲名とアーティストの一致を確認したものを優先し、無いぶんはホロライブ非公式wikiのディスコグラフィで補っています（<a href="https://music.youtube.com/" target="_blank" rel="noopener">YouTube Music</a>でも突き合わせ）。日付は各楽曲MVの初出動画の公開日。インスト版・ライブ版などの別バージョンは元の曲にまとめています。<b>飛び先は全曲、ホロライブ公式・支部公式・ユニット公式・所属ライバー本人チャンネルの動画であることをYouTube側に問い合わせて確認済みです</b>（各曲の下にチャンネル名を表示）。</p>
   </footer>
 </div>
 
@@ -504,8 +467,6 @@ const state = {
   mode: "jp",
   order: "desc",
   members: new Set(),
-  callsOnly: false,
-  callLevel: 2,        // 2=確定だけ 1=推定も含める 3=公式だけ
   soloOnly: false,
   groupOnly: false,
   basis: "mv",          // "mv" = MV公開日 / "rel" = 配信日
@@ -534,13 +495,6 @@ const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) 
 
 /* ── メタ情報 ── */
 $("#m-total").textContent = DATA.meta.total.toLocaleString();
-$("#m-calls").textContent = (DATA.meta.calls || 0).toLocaleString();
-{
-  /* ボタンの説明なので、それぞれのボタンで実際に出てくる曲数（＝累計）を出す */
-  const c3 = DATA.meta.calls3 || 0, c2 = DATA.meta.calls2 || 0, c1 = DATA.meta.calls || 0;
-  const put = (id, n) => { const e = document.getElementById(id); if (e) e.textContent = n.toLocaleString(); };
-  put("cnt3", c3); put("cnt2", c2); put("cnt1", c1);
-}
 $("#m-solos").textContent = (DATA.meta.solos || 0).toLocaleString();
 $("#m-groups").textContent = (DATA.meta.groups || 0).toLocaleString();
 $("#basis-count").textContent = (DATA.meta.dated || 0).toLocaleString();
@@ -621,7 +575,6 @@ function filtered() {
   if (state.members.size) {
     songs = songs.filter(s => s.m.some(m => state.members.has(m)));
   }
-  if (state.callsOnly) songs = songs.filter(s => s.c >= state.callLevel);
   if (state.soloOnly) songs = songs.filter(s => s.o);
   if (state.groupOnly) songs = songs.filter(s => s.w);
   songs = songs.slice().sort((a, b) => {
@@ -749,10 +702,6 @@ function rowFor(s) {
   const mid = el("div");
   const titlerow = el("div", "titlerow");
   titlerow.appendChild(el("h3", "title", s.t));
-  if (s.c) {
-    const lab = {3: "📣 公式コール", 2: "📣 コール表あり", 1: "📣 コール曲（推定）"}[s.c];
-    titlerow.appendChild(el("span", "badge lv" + s.c, lab));
-  }
   mid.appendChild(titlerow);
 
   const by = el("div", "by");
@@ -906,26 +855,6 @@ $("#basis-toggle").addEventListener("click", e => {
   render();
 });
 
-$("#call-level").addEventListener("click", e => {
-  const b = e.target.closest("button[data-lv]");
-  if (!b) return;
-  state.callLevel = +b.dataset.lv;
-  syncCallLevel(); render();
-});
-function syncCallLevel() {
-  document.querySelectorAll("#call-level button").forEach(b =>
-    b.setAttribute("aria-pressed", +b.dataset.lv === state.callLevel));
-  $("#call-level-row").hidden = !state.callsOnly;
-}
-
-$("#call-toggle").addEventListener("click", e => {
-  state.callsOnly = !state.callsOnly;
-  e.currentTarget.setAttribute("aria-pressed", state.callsOnly);
-  $("#call-note").hidden = !state.callsOnly;
-  syncCallLevel();
-  render();
-});
-
 $("#order-toggle").addEventListener("click", e => {
   state.order = state.order === "desc" ? "asc" : "desc";
   setOrderLabel();
@@ -941,20 +870,15 @@ try {
   if (saved && saved.mode) {
     state.mode = saved.mode;
     state.order = saved.order || "desc";
-    state.callsOnly = !!saved.callsOnly;
     state.soloOnly = !!saved.soloOnly;
     state.groupOnly = !!saved.groupOnly;
-    if ([1,2,3].includes(saved.callLevel)) state.callLevel = saved.callLevel;
     state.basis = saved.basis === "rel" ? "rel" : "mv";
   }
 } catch (_) {}
 setOrderLabel(); setBasisLabel();
-$("#call-toggle").setAttribute("aria-pressed", state.callsOnly);
 $("#solo-toggle").setAttribute("aria-pressed", state.soloOnly);
 $("#group-toggle").setAttribute("aria-pressed", state.groupOnly);
 $("#basis-note").hidden = state.basis !== "rel";
-$("#call-note").hidden = !state.callsOnly;
-syncCallLevel();
 syncMode(); buildRoster(); renderActive(); render();
 
 /* 年見出しの吸着位置をツールバーの実際の高さに合わせる */
@@ -971,9 +895,8 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(syncSticky
 window.addEventListener("beforeunload", () => {
   try {
     localStorage.setItem("holo-oriuta-v2", JSON.stringify(
-      {mode: state.mode, order: state.order, callsOnly: state.callsOnly,
-       soloOnly: state.soloOnly, groupOnly: state.groupOnly,
-       basis: state.basis, callLevel: state.callLevel}));
+      {mode: state.mode, order: state.order, soloOnly: state.soloOnly, groupOnly: state.groupOnly,
+       basis: state.basis}));
   } catch (_) {}
 });
 </script>
