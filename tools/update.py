@@ -47,6 +47,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS_OK = os.path.join(HERE, "channels-ok.txt")
 MEMBERS_TXT = os.path.join(HERE, "members.txt")
+UNITS_TXT = os.path.join(HERE, "units.txt")
 
 MAX_UTANET_NEW = 40      # 新曲の歌詞リンク探し
 MAX_UTANET_FILL = 35     # 既存曲の歌詞リンク埋め戻し
@@ -90,6 +91,19 @@ def read_config_lines(path):
                     if ln.strip() and not ln.lstrip().startswith("#")]
     except FileNotFoundError:
         return []
+
+
+def read_units():
+    """ユニット名 → メンバー一覧。照合は NFKC でそろえた名前で行う。"""
+    out = {}
+    for ln in read_config_lines(UNITS_TXT):
+        if "=" not in ln:
+            continue
+        name, rest = ln.split("=", 1)
+        mem = [x.strip() for x in rest.split(",") if x.strip()]
+        if name.strip() and mem:
+            out[unicodedata.normalize("NFKC", name.strip())] = mem
+    return out
 
 
 def strip_tags(s):
@@ -259,8 +273,12 @@ def utanet_once(title, members):
     """
     try:
         page = fetch(UTANET_SEARCH % urllib.parse.quote(title))
-    except Exception:
-        return "error", None
+    except urllib.error.HTTPError as e:
+        return "error", "HTTP %s %s" % (e.code, e.reason)
+    except urllib.error.URLError as e:
+        return "error", "URLError %s" % (e.reason,)
+    except Exception as e:
+        return "error", "%s: %s" % (type(e).__name__, e)
 
     # 本当の検索結果は tbody.songlist-table-body の中だけ。
     # 横のランキング枠を拾わないよう、ここで切り出す。
@@ -317,8 +335,10 @@ def itunes_lookup(title, members):
     term = (title + " " + who).strip()
     try:
         res = fetch_json(ITUNES % urllib.parse.quote(term)).get("results", [])
-    except Exception:
-        return "error", None, None
+    except urllib.error.HTTPError as e:
+        return "error", "HTTP %s %s" % (e.code, e.reason), None
+    except Exception as e:
+        return "error", "%s: %s" % (type(e).__name__, e), None
     want = norm(title)
     for r in res:
         if norm(r.get("trackName", "")) != want:
@@ -421,9 +441,20 @@ def main():
               % (r["d"], r["t"], "・".join(r["m"]) or "?", why))
 
     # ── 3. レコードを組み立てる ──
+    units = read_units()
+    if units:
+        print("  （ユニット表を %d件 読んだ）" % len(units))
+
     added = []
     for r in to_add:
         mem = r["m"]
+        # 歌唱者欄がユニット名1つだけなら、メンバーに開く
+        if len(mem) == 1:
+            key = unicodedata.normalize("NFKC", mem[0])
+            if key in units:
+                print("  ※ %s を %d人に開いた: %s"
+                      % (mem[0], len(units[key]), "・".join(units[key])))
+                mem = list(units[key])
         branches, scopes = [], []
         unknown_mem = []
         for m in mem:
@@ -472,8 +503,7 @@ def main():
         # error: 印を付けない。来週また試す
         u_err += 1
         streak += 1
-        if loud:
-            print("  ! %s → 取りに行けなかった。印は付けない" % rec["t"])
+        print("  ! %s → 取りに行けなかった（%s）。印は付けない" % (rec["t"], sid))
         return False
 
     for rec in added[:MAX_UTANET_NEW]:
@@ -515,6 +545,8 @@ def main():
         if st == "error":
             a_err += 1
             a_streak += 1
+            if a_err <= 3:
+                print("  ! %s → 取りに行けなかった（%s）" % (s["t"], rel))
             continue           # 印を付けない。来週また試す
         a_streak = 0
         if tid:
