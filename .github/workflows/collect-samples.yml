@@ -1,0 +1,134 @@
+# 偵察用のワークフロー。
+#
+# やること:
+#   1. データ元のページに届くか確かめる
+#   2. 届いたページの「構造」だけをログに出す（本文は切り詰める）
+#   3. ごく小さなファイルを1つ書き戻して、Actionがこのリポジトリに
+#      書き込めるかを確かめる
+#
+# サイト本体（index.html）には一切触らない。
+# 他社サイトのHTMLをこのリポジトリに保存することもしない。
+name: collect-samples
+
+on:
+  workflow_dispatch:          # 画面の「Run workflow」ボタンから手動で起動する
+
+permissions:
+  contents: write             # 書き戻しの確認に必要
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: データ元に届くか確かめて、構造を書き出す
+        run: |
+          python3 - <<'PY'
+          import json, re, urllib.request, urllib.error
+
+          UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+                "Accept-Language": "ja,en;q=0.8"}
+
+          TARGETS = [
+              ("ホロ曲DB 曲一覧",   "https://db.holoplayer.jp/song/list/",      "html"),
+              ("ホロ曲DB 曲ページ", "https://db.holoplayer.jp/song/3407/",      "html"),
+              ("歌ネット 検索",     "https://www.uta-net.com/search/?Keyword=%E3%82%B3%E3%83%A8%E3%83%AA%E3%83%8B%E3%82%A6%E3%83%A0&Aselect=2&Bselect=3", "html"),
+              ("YouTube oEmbed",   "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dz3vft8VKyls&format=json", "json"),
+              ("iTunes 検索API",   "https://itunes.apple.com/search?term=%E3%83%92%E3%83%A8%E3%82%B3%E3%81%AE%E3%82%AD%E3%83%9E%E3%82%B0%E3%83%AC&country=jp&media=music&entity=song&limit=3", "json"),
+          ]
+
+          def skeleton(html, limit=90):
+              """タグとclassだけ残して、本文は切り詰める。"""
+              # script / style は丸ごと捨てる
+              html = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+              # 本文の長い文字列を縮める
+              def shorten(m):
+                  t = m.group(0).strip()
+                  if not t:
+                      return ""
+                  return "｟文字" + str(len(t)) + "｠" if len(t) > 12 else t
+              return html
+
+          def tag_profile(html):
+              """class名の出現回数。どのclassが行を表しているか当てるため。"""
+              html = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+              counts = {}
+              for cls in re.findall(r'class="([^"]{1,120})"', html):
+                  for c in cls.split():
+                      counts[c] = counts.get(c, 0) + 1
+              top = sorted(counts.items(), key=lambda kv: -kv[1])[:40]
+              return top
+
+          for label, url, kind in TARGETS:
+              print("\n" + "=" * 72)
+              print("■ " + label)
+              print(url)
+              print("=" * 72)
+              try:
+                  req = urllib.request.Request(url, headers=UA)
+                  with urllib.request.urlopen(req, timeout=40) as r:
+                      raw = r.read()
+                      enc = r.headers.get_content_charset() or "utf-8"
+                      status = r.status
+                      ctype = r.headers.get("Content-Type", "?")
+                  body = raw.decode(enc, "replace")
+                  print("HTTP %s / %s / %d bytes" % (status, ctype, len(raw)))
+              except urllib.error.HTTPError as e:
+                  print("!! HTTPError %s %s" % (e.code, e.reason))
+                  continue
+              except Exception as e:
+                  print("!! %s: %s" % (type(e).__name__, e))
+                  continue
+
+              if kind == "json":
+                  try:
+                      obj = json.loads(body)
+                      print(json.dumps(obj, ensure_ascii=False, indent=2)[:2500])
+                  except Exception as e:
+                      print("JSONとして読めない:", e)
+                      print(body[:800])
+                  continue
+
+              # --- HTML ---
+              m = re.search(r"(?is)<title[^>]*>(.*?)</title>", body)
+              print("title:", (m.group(1).strip() if m else "なし")[:120])
+
+              print("\n-- よく出てくる class（上位40） --")
+              for c, n in tag_profile(body):
+                  print("  %5d  %s" % (n, c))
+
+              # 動画IDと歌ネットのIDがどんな形で埋まっているか
+              vids = re.findall(r'(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{11})', body)
+              print("\n-- 動画IDらしきもの: %d件 / 重複なし %d件 --"
+                    % (len(vids), len(set(vids))))
+              print("  例:", list(dict.fromkeys(vids))[:8])
+
+              songs = re.findall(r'/song/(\d+)/', body)
+              print("-- /song/ID/ へのリンク: %d件 / 重複なし %d件 --"
+                    % (len(songs), len(set(songs))))
+              print("  例:", list(dict.fromkeys(songs))[:8])
+
+              # 行の実物を少しだけ。tr / li / article の最初の2つ
+              for tag in ("tr", "li", "article", "div"):
+                  found = re.findall(r"(?is)<%s\b[^>]*>.{40,1200}?</%s>" % (tag, tag), body)
+                  found = [f for f in found if re.search(r"/song/\d+/|youtu", f)]
+                  if found:
+                      print("\n-- <%s> で /song/ か youtu を含むもの: %d件。最初の2件 --"
+                            % (tag, len(found)))
+                      for f in found[:2]:
+                          print("  " + re.sub(r"\s+", " ", f)[:900])
+                      break
+          PY
+
+      - name: 書き込めるか確かめる
+        run: |
+          mkdir -p _check
+          date -u +"collect-samples が書き込みに成功: %Y-%m-%d %H:%M UTC" > _check/write-test.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add _check/write-test.txt
+          git diff --staged --quiet && echo "変更なし" && exit 0
+          git commit -m "偵察: 書き込み確認"
+          git push
