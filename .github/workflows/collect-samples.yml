@@ -1,134 +1,153 @@
-# 偵察用のワークフロー。
-#
-# やること:
-#   1. データ元のページに届くか確かめる
-#   2. 届いたページの「構造」だけをログに出す（本文は切り詰める）
-#   3. ごく小さなファイルを1つ書き戻して、Actionがこのリポジトリに
-#      書き込めるかを確かめる
-#
-# サイト本体（index.html）には一切触らない。
-# 他社サイトのHTMLをこのリポジトリに保存することもしない。
+# 偵察 その2。
+#   1. ホロ曲DB で 1,477曲ぶんのURLをまとめて取れる道を探す
+#      （sitemap / ページ送り / ページ内のスクリプト）
+#   2. 歌ネットの「本当の検索結果」がどのタグに入っているかを突き止める
+# サイト本体（index.html）には触らない。
 name: collect-samples
 
 on:
-  workflow_dispatch:          # 画面の「Run workflow」ボタンから手動で起動する
+  workflow_dispatch:
 
 permissions:
-  contents: write             # 書き戻しの確認に必要
+  contents: read
 
 jobs:
   collect:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: データ元に届くか確かめて、構造を書き出す
+      - name: 偵察する
         run: |
           python3 - <<'PY'
-          import json, re, urllib.request, urllib.error
+          import gzip, io, json, re, urllib.request, urllib.error
 
           UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                               "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-                "Accept-Language": "ja,en;q=0.8"}
+                "Accept-Language": "ja,en;q=0.8",
+                "Accept-Encoding": "gzip"}
 
-          TARGETS = [
-              ("ホロ曲DB 曲一覧",   "https://db.holoplayer.jp/song/list/",      "html"),
-              ("ホロ曲DB 曲ページ", "https://db.holoplayer.jp/song/3407/",      "html"),
-              ("歌ネット 検索",     "https://www.uta-net.com/search/?Keyword=%E3%82%B3%E3%83%A8%E3%83%AA%E3%83%8B%E3%82%A6%E3%83%A0&Aselect=2&Bselect=3", "html"),
-              ("YouTube oEmbed",   "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dz3vft8VKyls&format=json", "json"),
-              ("iTunes 検索API",   "https://itunes.apple.com/search?term=%E3%83%92%E3%83%A8%E3%82%B3%E3%81%AE%E3%82%AD%E3%83%9E%E3%82%B0%E3%83%AC&country=jp&media=music&entity=song&limit=3", "json"),
-          ]
+          def get(url, timeout=40):
+              req = urllib.request.Request(url, headers=UA)
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  raw = r.read()
+                  if r.headers.get("Content-Encoding") == "gzip":
+                      raw = gzip.decompress(raw)
+                  enc = r.headers.get_content_charset() or "utf-8"
+                  return r.status, r.headers.get("Content-Type", "?"), raw, raw.decode(enc, "replace")
 
-          def skeleton(html, limit=90):
-              """タグとclassだけ残して、本文は切り詰める。"""
-              # script / style は丸ごと捨てる
-              html = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
-              # 本文の長い文字列を縮める
-              def shorten(m):
-                  t = m.group(0).strip()
-                  if not t:
-                      return ""
-                  return "｟文字" + str(len(t)) + "｠" if len(t) > 12 else t
-              return html
-
-          def tag_profile(html):
-              """class名の出現回数。どのclassが行を表しているか当てるため。"""
-              html = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
-              counts = {}
-              for cls in re.findall(r'class="([^"]{1,120})"', html):
-                  for c in cls.split():
-                      counts[c] = counts.get(c, 0) + 1
-              top = sorted(counts.items(), key=lambda kv: -kv[1])[:40]
-              return top
-
-          for label, url, kind in TARGETS:
-              print("\n" + "=" * 72)
-              print("■ " + label)
-              print(url)
-              print("=" * 72)
+          def head(label, url):
+              print("\n" + "-" * 68)
+              print("● " + label)
+              print("  " + url)
               try:
-                  req = urllib.request.Request(url, headers=UA)
-                  with urllib.request.urlopen(req, timeout=40) as r:
-                      raw = r.read()
-                      enc = r.headers.get_content_charset() or "utf-8"
-                      status = r.status
-                      ctype = r.headers.get("Content-Type", "?")
-                  body = raw.decode(enc, "replace")
-                  print("HTTP %s / %s / %d bytes" % (status, ctype, len(raw)))
+                  st, ct, raw, body = get(url)
               except urllib.error.HTTPError as e:
-                  print("!! HTTPError %s %s" % (e.code, e.reason))
-                  continue
+                  print("  !! HTTP %s %s" % (e.code, e.reason)); return None
               except Exception as e:
-                  print("!! %s: %s" % (type(e).__name__, e))
-                  continue
+                  print("  !! %s: %s" % (type(e).__name__, e)); return None
+              rows = body.count('class="sl-row"')
+              songs = len(set(re.findall(r'/song/(\d+)/', body)))
+              print("  HTTP %s / %s / %d bytes / sl-row %d / 曲URL %d種"
+                    % (st, ct, len(raw), rows, songs))
+              return body
 
-              if kind == "json":
-                  try:
-                      obj = json.loads(body)
-                      print(json.dumps(obj, ensure_ascii=False, indent=2)[:2500])
-                  except Exception as e:
-                      print("JSONとして読めない:", e)
-                      print(body[:800])
-                  continue
+          print("#" * 68)
+          print("# 1. ホロ曲DB: まとめて取れる道を探す")
+          print("#" * 68)
 
-              # --- HTML ---
+          for label, url in [
+              ("robots.txt",        "https://db.holoplayer.jp/robots.txt"),
+              ("sitemap.xml",       "https://db.holoplayer.jp/sitemap.xml"),
+              ("sitemap-index.xml", "https://db.holoplayer.jp/sitemap-index.xml"),
+          ]:
+              b = head(label, url)
+              if b:
+                  print("  --- 中身の先頭 1200文字 ---")
+                  print("  " + b[:1200].replace("\n", "\n  "))
+
+          print("\n### ページ送りの当てずっぽう ###")
+          for u in ["https://db.holoplayer.jp/song/list/?page=2",
+                    "https://db.holoplayer.jp/song/list/2/",
+                    "https://db.holoplayer.jp/song/list/page/2/",
+                    "https://db.holoplayer.jp/song/list/?p=2",
+                    "https://db.holoplayer.jp/song/list/?offset=50",
+                    "https://db.holoplayer.jp/song/list/all/"]:
+              head(u.split("/song/list/")[1] or "(そのまま)", u)
+
+          print("\n### 一覧ページのスクリプトを見る ###")
+          try:
+              _, _, _, body = get("https://db.holoplayer.jp/song/list/")
+          except Exception as e:
+              print("取得できない:", e); body = ""
+
+          if body:
+              srcs = re.findall(r'<script[^>]+src="([^"]+)"', body)
+              print("外部スクリプト %d本:" % len(srcs))
+              for s in srcs[:20]:
+                  print("  ", s)
+
+              inline = re.findall(r"(?is)<script(?![^>]+src)[^>]*>(.*?)</script>", body)
+              print("\n埋め込みスクリプト %d個。URLらしき文字列だけ拾う:" % len(inline))
+              urls = set()
+              for s in inline:
+                  for m in re.findall(r'["\'](/[^"\']{3,80}|https?://[^"\']{5,120})["\']', s):
+                      if re.search(r"json|song|api|data|list", m, re.I):
+                          urls.add(m)
+              for u in sorted(urls)[:40]:
+                  print("  ", u)
+
+              print("\nJSONらしい大きな塊があるか:")
+              for m in re.finditer(r'type="application/json"[^>]*>(.{0,200})', body):
+                  print("  ", re.sub(r"\s+", " ", m.group(1))[:200])
+
+              print("\nsl-more の前後:")
+              for m in list(re.finditer(r'sl-more', body))[:3]:
+                  s = max(0, m.start() - 350)
+                  print("  …" + re.sub(r"\s+", " ", body[s:m.end() + 350]))
+
+              print("\nページ送りらしいリンク:")
+              for a in set(re.findall(r'href="([^"]*(?:page|more|next|p=|\d+)/?)"', body)):
+                  if "/song/" not in a and "/talent/" not in a and len(a) < 60:
+                      print("  ", a)
+
+          print("\n" + "#" * 68)
+          print("# 2. 歌ネット: 本当の検索結果はどこか")
+          print("#" * 68)
+
+          for label, url in [
+              ("robots.txt", "https://www.uta-net.com/robots.txt"),
+          ]:
+              b = head(label, url)
+              if b:
+                  print("  " + b[:600].replace("\n", "\n  "))
+
+          for label, url in [
+              ("曲名検索 コヨリニウム",
+               "https://www.uta-net.com/search/?Aselect=2&Bselect=3&Keyword=%E3%82%B3%E3%83%A8%E3%83%AA%E3%83%8B%E3%82%A6%E3%83%A0"),
+              ("アーティストページ 26384",
+               "https://www.uta-net.com/artist/26384/"),
+          ]:
+              body = head(label, url)
+              if not body:
+                  continue
               m = re.search(r"(?is)<title[^>]*>(.*?)</title>", body)
-              print("title:", (m.group(1).strip() if m else "なし")[:120])
+              print("  title:", (m.group(1).strip() if m else "なし")[:100])
 
-              print("\n-- よく出てくる class（上位40） --")
-              for c, n in tag_profile(body):
-                  print("  %5d  %s" % (n, c))
-
-              # 動画IDと歌ネットのIDがどんな形で埋まっているか
-              vids = re.findall(r'(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{11})', body)
-              print("\n-- 動画IDらしきもの: %d件 / 重複なし %d件 --"
-                    % (len(vids), len(set(vids))))
-              print("  例:", list(dict.fromkeys(vids))[:8])
-
-              songs = re.findall(r'/song/(\d+)/', body)
-              print("-- /song/ID/ へのリンク: %d件 / 重複なし %d件 --"
-                    % (len(songs), len(set(songs))))
-              print("  例:", list(dict.fromkeys(songs))[:8])
-
-              # 行の実物を少しだけ。tr / li / article の最初の2つ
-              for tag in ("tr", "li", "article", "div"):
-                  found = re.findall(r"(?is)<%s\b[^>]*>.{40,1200}?</%s>" % (tag, tag), body)
-                  found = [f for f in found if re.search(r"/song/\d+/|youtu", f)]
-                  if found:
-                      print("\n-- <%s> で /song/ か youtu を含むもの: %d件。最初の2件 --"
-                            % (tag, len(found)))
-                      for f in found[:2]:
-                          print("  " + re.sub(r"\s+", " ", f)[:900])
+              # 曲へのリンクを、出てくる順に前後の文脈つきで見る
+              hits = list(re.finditer(r'href="/song/(\d+)/"', body))
+              print("  /song/ リンク %d個。1,2,6,10,14番目の前後を見る:" % len(hits))
+              for i in (0, 1, 5, 9, 13):
+                  if i >= len(hits):
                       break
-          PY
+                  h = hits[i]
+                  s = max(0, h.start() - 500)
+                  e = min(len(body), h.end() + 300)
+                  print("\n  [%d番目 /song/%s/]" % (i + 1, h.group(1)))
+                  print("  …" + re.sub(r"\s+", " ", body[s:e]))
 
-      - name: 書き込めるか確かめる
-        run: |
-          mkdir -p _check
-          date -u +"collect-samples が書き込みに成功: %Y-%m-%d %H:%M UTC" > _check/write-test.txt
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add _check/write-test.txt
-          git diff --staged --quiet && echo "変更なし" && exit 0
-          git commit -m "偵察: 書き込み確認"
-          git push
+              # table があるならその構造
+              trs = re.findall(r"(?is)<tr\b[^>]*>.{20,900}?</tr>", body)
+              trs = [t for t in trs if "/song/" in t]
+              print("\n  /song/ を含む <tr>: %d個" % len(trs))
+              for t in trs[:2]:
+                  print("   ", re.sub(r"\s+", " ", t)[:700])
+          PY
