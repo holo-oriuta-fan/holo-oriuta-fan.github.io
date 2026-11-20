@@ -407,6 +407,26 @@ def clean_song_title(t):
     return t
 
 
+def split_solo(title, members):
+    """
+    「○○ (△△ SOLO ver.)」「○○ - △△ SOLO ver.」「○○(△△ソロ)」から
+    本体の曲名と歌っている人を取り出す。当てはまらなければ (None, None)。
+    """
+    for pat in (r"\s*[(（]([^()（）]*?)[)）]\s*$", r"\s*[-－—]\s*(.+?)\s*$"):
+        m = re.search(pat, title)
+        if not m:
+            continue
+        deco, base = m.group(1), title[:m.start()].strip()
+        if not re.search(r"(?i)solo|ソロ", deco):
+            continue
+        nd = norm(deco)
+        # 長い名前から先に見る（「AZKi」が別の名前の一部になるのを避ける）
+        for who in sorted(members, key=len, reverse=True):
+            if norm(who) and norm(who) in nd:
+                return base, who
+    return None, None
+
+
 def parse_talent(html):
     """
     メンバーのページから、その人の曲を全部拾う。
@@ -439,10 +459,10 @@ def parse_talent(html):
     return out, way, sample
 
 
-def audit_talents(data, loud=True):
+def audit_talents(data, apply=False, loud=True):
     """
     メンバーごとのページを全部見て、ホロ曲DBにあってこちらに無い曲を洗い出す。
-    何も書き換えない。報告だけ。
+    apply のときだけ、ソロバージョンを本体の曲に畳む（それ以外は書き換えない）。
     突き合わせは動画IDを最優先。無いときだけ曲名で見る。
     """
     print("  メンバーの一覧を取りに行く …")
@@ -450,15 +470,16 @@ def audit_talents(data, loud=True):
         idx = fetch(TALENT_INDEX)
     except Exception as e:
         print("  !! 取りに行けなかった（%s）" % _why(e))
-        return
+        return []
     ids = list(dict.fromkeys(re.findall(r'href="/talent/(\d+)/"', idx)))
     print("  メンバーのページ %d件" % len(ids))
     if not ids:
         print("  !! 1件も見つからない。ページの作りが変わった可能性")
-        return
+        return []
 
     songs = data["songs"]
-    have_t = {norm(x["t"]) for x in songs}
+    members = {r["name"] for r in data.get("roster", [])}
+    by_title = {norm(x["t"]): x for x in songs}
     have_v = set()
     for x in songs:
         if x.get("v"):
@@ -467,8 +488,7 @@ def audit_talents(data, loud=True):
             if e.get("v"):
                 have_v.add(e["v"])
 
-    miss = {}        # 曲ID → {"t":…, "v":…, "who":[…]}
-    total, novid, shown = 0, 0, False
+    miss, total, novid = {}, 0, 0
     for n, tid in enumerate(ids, 1):
         try:
             page = fetch(BASE + "/talent/%s/" % tid)
@@ -476,7 +496,7 @@ def audit_talents(data, loud=True):
             print("  !! /talent/%s/ … %s" % (tid, _why(e)))
             continue
         time.sleep(1.5)
-        got, way, sample = parse_talent(page)
+        got, way, _ = parse_talent(page)
         m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", page)
         who = strip_tags(m.group(1)) if m else ("talent/" + tid)
         who = re.sub(r"[（(].*?[）)]", "", who)
@@ -484,18 +504,12 @@ def audit_talents(data, loud=True):
         total += len(got)
         if n <= 2 or not got:
             print("  %-16s %s" % (who[:16], way))
-            if sample and not shown:
-                print("     リンク1つの実物 → %s" % sample)
-                shown = True
         for g in got:
-            if g["v"]:
-                if g["v"] in have_v:
-                    continue
-            else:
+            if g["v"] and g["v"] in have_v:
+                continue
+            if not g["v"]:
                 novid += 1
-                if norm(g["t"]) in have_t:
-                    continue
-            if g["v"] and norm(g["t"]) in have_t:
+            if norm(g["t"]) in by_title:
                 continue
             e = miss.setdefault(g["id"], {"t": g["t"], "v": g["v"], "who": []})
             if who not in e["who"]:
@@ -504,25 +518,61 @@ def audit_talents(data, loud=True):
     print("  読んだ曲（のべ）: %d / 動画IDが取れなかったもの: %d" % (total, novid))
     print()
 
-    sv_like, other = [], []
+    # ── ソロバージョン ──
+    folded, orphan = [], []
+    rest = {}
     for sid, e in miss.items():
-        if re.search(r"(?i)[(（][^()（）]*(solo|ソロ)[^()（）]*[)）]|[-－—]\s*\S+\s*solo",
-                     e["t"]):
-            sv_like.append((sid, e))
-        else:
-            other.append((sid, e))
+        base, person = split_solo(e["t"], members)
+        if not (base and person):
+            rest[sid] = e
+            continue
+        host = by_title.get(norm(base))
+        if not host:
+            orphan.append(e)
+            continue
+        if apply:
+            sv = host.setdefault("sv", [])
+            if not any(x.get("v") == e["v"] for x in sv):
+                sv.append({"n": person, "v": e["v"]})
+        folded.append((e["t"], host["t"], person))
 
-    print("  ── ソロバージョンらしき曲: %d件 ──" % len(sv_like))
-    for sid, e in sorted(sv_like, key=lambda x: x[1]["t"]):
-        print("     %-46s v=%s  ← %s"
-              % (e["t"][:46], e["v"] or "なし", "・".join(e["who"])[:24]))
+    print("  ── ソロバージョン: %d件 ──" % (len(folded) + len(orphan)))
+    for t, h, person in sorted(folded):
+        print("     %s %-44s → %s（%s）"
+              % ("畳んだ" if apply else "畳める", t[:44], h, person))
+    for e in orphan:
+        print("     本体が無いので見送り: %s" % e["t"])
+    if folded and apply:
+        for h in songs:
+            if h.get("sv"):
+                order = {nm: i for i, nm in enumerate(h.get("m") or [])}
+                h["sv"].sort(key=lambda x: order.get(x["n"], 99))
     print()
-    print("  ── そのほか、こちらに無い曲: %d件 ──" % len(other))
-    for sid, e in sorted(other, key=lambda x: x[1]["t"])[:150]:
-        print("     %-46s v=%s  ← %s"
-              % (e["t"][:46], e["v"] or "なし", "・".join(e["who"])[:24]))
-    if len(other) > 150:
-        print("     …ほか %d件" % (len(other) - 150))
+
+    # ── 残り。種類ごとに数える ──
+    def kind(t):
+        if re.search(r"(?i)remix|リミックス|acapella|アカペラ|instrumental", t):
+            return "リミックス・アカペラなど"
+        if re.search(r"(?i)(english|japanese|indonesian|korean)\s*ver|英語|日本語", t):
+            return "言語ちがい"
+        if re.search(r"(?i)ver\.|version|\(20\d\d", t):
+            return "そのほかの別バージョン"
+        if re.search(r"(?i)^(intro|interlude|outro|prelude|skit)\b|:$", t):
+            return "イントロ・間奏など"
+        return "ふつうの曲（たぶんアルバム収録でMVなし）"
+
+    cats = {}
+    for sid, e in rest.items():
+        cats.setdefault(kind(e["t"]), []).append(e)
+
+    print("  ── そのほか、こちらに無い曲: %d件 ──" % len(rest))
+    for c in sorted(cats, key=lambda c: -len(cats[c])):
+        print("     %-34s %4d件" % (c, len(cats[c])))
+        for e in sorted(cats[c], key=lambda x: x["t"])[:6]:
+            print("        %-44s ← %s" % (e["t"][:44], "・".join(e["who"])[:20]))
+        if len(cats[c]) > 6:
+            print("        …ほか %d件" % (len(cats[c]) - 6))
+    return folded
 
 
 # ───────────────── フェスのセットリスト ─────────────────
@@ -910,8 +960,19 @@ def main():
 
     if args.audit:
         print("\n[棚卸し] メンバーごとのページを全部見る")
-        audit_talents(data)
-        print("\n棚卸しだけなので、ファイルは書き換えていません。")
+        folded = audit_talents(data, apply=args.apply)
+        if not args.apply:
+            print("\n棚卸しだけなので、ファイルは書き換えていません。")
+            print("（ソロバージョンを実際に畳むには、"
+                  "「実際に書き換える」にもチェックを入れて走らせます）")
+            return 0
+        if not folded:
+            print("\n畳むものが無かったので、書き換えていません。")
+            return 0
+        recount(data)
+        write_data(args.file, src, j, k, data)
+        print("\n%s を書き換えました。ソロバージョン %d件を本体に畳みました。"
+              % (args.file, len(folded)))
         return 0
 
     # ── 1. ホロ曲DB の最新50曲を見る ──
