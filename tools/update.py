@@ -1009,7 +1009,7 @@ def fold_solo_versions(data, loud=True):
         if h.get("sv"):
             order = {n: i for i, n in enumerate(h.get("m") or [])}
             h["sv"].sort(key=lambda e: order.get(e["n"], 99))
-    return folded + alt
+    return folded
 
 
 def fold_alt_versions(data, loud=True):
