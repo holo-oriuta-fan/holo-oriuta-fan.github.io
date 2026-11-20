@@ -39,6 +39,8 @@ UA = {
 LIST_URL = "https://db.holoplayer.jp/song/list/"
 SETLIST_INDEX = "https://db.holoplayer.jp/feature/setlist/"
 SETLIST_BASE = "https://db.holoplayer.jp"
+TALENT_INDEX = "https://db.holoplayer.jp/talent/"
+BASE = "https://db.holoplayer.jp"
 OEMBED = "https://www.youtube.com/oembed?url=%s&format=json"
 UTANET_SEARCH = "https://www.uta-net.com/search/?Aselect=2&Bselect=3&Keyword=%s"
 ITUNES = ("https://itunes.apple.com/search?term=%s&country=jp"
@@ -391,6 +393,112 @@ def itunes_lookup(title, members):
 
 # ──────────────────────────── 集計 ────────────────────────────
 
+# ───────────────── 全曲の棚卸し ─────────────────
+
+def parse_talent(html):
+    """
+    メンバーのページから、その人の曲を全部拾う。
+    曲一覧ページと同じ作りなら sl-row で取れる。違っていたときのために、
+    曲ページへのリンクから拾う方法も用意して、どちらで取れたかを出す。
+    返すのは ([{"id":…, "t":…, "v":…}], 診断文)。
+    """
+    body = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+    out, seen = [], set()
+
+    rows = parse_list(body)          # 曲一覧と同じ作りを試す
+    for r in rows:
+        if r["song_id"] and r["song_id"] not in seen:
+            seen.add(r["song_id"])
+            out.append({"id": r["song_id"], "t": r["t"], "v": r["v"]})
+    way = "sl-row %d件" % len(out)
+
+    if not out:
+        # 作りが違うとき: 曲ページへのリンクと、その中の文字から拾う
+        for m in re.finditer(
+                r'(?is)<a[^>]*href="/song/(\d+)/"[^>]*>(.*?)</a>', body):
+            sid, inner = m.group(1), m.group(2)
+            t = strip_tags(inner)
+            if not t or sid in seen:
+                continue
+            seen.add(sid)
+            out.append({"id": sid, "t": t, "v": ""})
+        way += " / リンクから %d件" % len(out)
+
+    return out, way
+
+
+def audit_talents(data, loud=True):
+    """
+    メンバーごとのページを全部見て、ホロ曲DBにあってこちらに無い曲を洗い出す。
+    何も書き換えない。報告だけ。
+    """
+    print("  メンバーの一覧を取りに行く …")
+    try:
+        idx = fetch(TALENT_INDEX)
+    except Exception as e:
+        print("  !! 取りに行けなかった（%s）" % _why(e))
+        return
+    ids = list(dict.fromkeys(re.findall(r'href="/talent/(\d+)/"', idx)))
+    print("  メンバーのページ %d件" % len(ids))
+    if not ids:
+        print("  !! 1件も見つからない。ページの作りが変わった可能性")
+        return
+
+    songs = data["songs"]
+    have_t = {norm(x["t"]) for x in songs}
+    for x in songs:                       # 畳んだソロ版も「持っている」
+        for e in (x.get("sv") or []):
+            pass
+    have_v = {x["v"] for x in songs if x.get("v")}
+    for x in songs:
+        for e in (x.get("sv") or []):
+            if e.get("v"):
+                have_v.add(e["v"])
+
+    missing, ways, total = {}, {}, 0
+    for n, tid in enumerate(ids, 1):
+        try:
+            page = fetch(BASE + "/talent/%s/" % tid)
+        except Exception as e:
+            print("  !! /talent/%s/ … %s" % (tid, _why(e)))
+            continue
+        time.sleep(1.5)
+        got, way = parse_talent(page)
+        ways[way.split()[0]] = ways.get(way.split()[0], 0) + 1
+        m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", page)
+        who = strip_tags(m.group(1)) if m else ("talent/" + tid)
+        who = re.sub(r"\s*(の楽曲|の曲).*$", "", who).strip()
+        total += len(got)
+        if n <= 3 or not got:
+            print("  %-22s %d曲（%s）" % (who[:22], len(got), way))
+        for g in got:
+            if norm(g["t"]) in have_t:
+                continue
+            if g["v"] and g["v"] in have_v:
+                continue
+            missing.setdefault(g["t"], []).append(who)
+
+    print("  読んだ曲（のべ）: %d" % total)
+    print("  取り方の内訳: %s" % ways)
+    print()
+    sv_like, other = [], []
+    for t in missing:
+        if re.search(r"(?i)[(（][^()（）]*(solo|ソロ)[^()（）]*[)）]|solo\s*ver", t):
+            sv_like.append(t)
+        else:
+            other.append(t)
+
+    print("  ── ソロバージョンらしき曲: %d件 ──" % len(sv_like))
+    for t in sorted(sv_like):
+        print("     %s  ← %s" % (t, "・".join(dict.fromkeys(missing[t]))[:40]))
+    print()
+    print("  ── そのほか、こちらに無い曲: %d件 ──" % len(other))
+    for t in sorted(other)[:120]:
+        print("     %s  ← %s" % (t[:56], "・".join(dict.fromkeys(missing[t]))[:30]))
+    if len(other) > 120:
+        print("     …ほか %d件" % (len(other) - 120))
+
+
 # ───────────────── フェスのセットリスト ─────────────────
 
 def parse_setlist(html):
@@ -588,6 +696,7 @@ def expand_units(data, units, loud=True):
             continue
         x["m"] = list(units[key])
         x["n"] = len(x["m"])
+        x["o"] = 1 if len(x["m"]) == 1 else 0   # ソロ印も人数に合わせる
         done.append((x["t"], who, len(x["m"])))
         if loud:
             print("  開いた: %-34s %s → %d人" % (x["t"][:34], who, len(x["m"])))
@@ -700,6 +809,23 @@ def fix_roster(data, mem_branch, mem_info, loud=True):
     return fixed, added
 
 
+def fix_solo_flags(data, loud=True):
+    """
+    ソロ印（o）と実際の人数が食い違っている曲を直す。
+    歌った人が空だった頃に付いた印が、ユニットを開いたあとも残っていることがある。
+    """
+    fixed = []
+    for x in data["songs"]:
+        want = 1 if len(x.get("m") or []) == 1 else 0
+        if x.get("o") != want:
+            if loud:
+                print("  ソロ印を直した: %-30s %d人なので o=%d"
+                      % (x["t"][:30], len(x.get("m") or []), want))
+            x["o"] = want
+            fixed.append(x["t"])
+    return fixed
+
+
 def recount(data):
     songs = data["songs"]
     meta = data["meta"]
@@ -712,7 +838,9 @@ def recount(data):
     meta["calls2"] = sum(1 for s in songs if (s.get("c") or 0) >= 2)
     meta["calls3"] = sum(1 for s in songs if (s.get("c") or 0) >= 3)
     meta["solos"] = sum(1 for s in songs if len(s.get("m") or []) == 1)
-    meta["groups"] = sum(1 for s in songs if s.get("w"))
+    # グループ曲＝2人以上で歌っている曲。元の全体曲フラグ（w）は
+    # ホロライブ全体の曲だけを指していて38曲しかなく、ユニットの曲が漏れる。
+    meta["groups"] = sum(1 for s in songs if len(s.get("m") or []) >= 2)
     meta["dated"] = sum(1 for s in songs if s.get("r"))
     meta["dated_apple"] = sum(1 for s in songs if s.get("rs") == "apple")
     meta["updated"] = time.strftime("%Y-%m-%d", time.gmtime())
@@ -726,6 +854,8 @@ def main():
     ap.add_argument("--file", default="index.html")
     ap.add_argument("--apply", action="store_true",
                     help="付けると実際に書き換える。付けないと下見だけ")
+    ap.add_argument("--audit", action="store_true",
+                    help="メンバーのページを全部見て、こちらに無い曲を洗い出す（報告だけ）")
     args = ap.parse_args()
 
     src, j, k, data = read_data(args.file)
@@ -751,6 +881,12 @@ def main():
     by_title = {}
     for s in songs:
         by_title.setdefault(norm(s["t"]), []).append(s)
+
+    if args.audit:
+        print("\n[棚卸し] メンバーごとのページを全部見る")
+        audit_talents(data)
+        print("\n棚卸しだけなので、ファイルは書き換えていません。")
+        return 0
 
     # ── 1. ホロ曲DB の最新50曲を見る ──
     print("\n[1] ホロ曲DB の最新一覧を読む")
@@ -984,14 +1120,19 @@ def main():
     if not folded:
         print("  畳むものなし")
 
-    print("\n[8] メンバー一覧をそろえる")
+    print("\n[8] ソロ印と人数のズレを直す")
+    sfix = fix_solo_flags(data)
+    if not sfix:
+        print("  ズレなし")
+
+    print("\n[9] メンバー一覧をそろえる")
     n_fixed, n_added = fix_roster(data, mem_branch, mem_info)
     if not n_fixed and not n_added:
         print("  直すところなし")
 
     meta = recount(data)
 
-    print("\n[9] まとめ")
+    print("\n[10] まとめ")
     print("  追加: %d曲 / 保留: %d曲 / 曲名重複で見送り: %d曲"
           % (len(added), len(hold), len(dup)))
     print("  合計 %d曲 / コール 確定%d・公式まで%d・推定まで%d"
@@ -1006,7 +1147,7 @@ def main():
         return 0
 
     if not (added or got or filled or a_got or a_date or n_fixed or n_added
-            or folded or new_fes or opened):
+            or folded or new_fes or opened or sfix):
         print("\n変わったところが無いので、書き換えません。")
         return 0
 
