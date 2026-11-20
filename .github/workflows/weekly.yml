@@ -1,8 +1,12 @@
 # ホロライブ オリ曲アーカイブ ─ 週次更新
 #
-# 毎週月曜の朝（日本時間 9:37）に走って、新曲を index.html に足す。
+# 毎週月曜の朝（日本時間 9:37）に走って、新曲とセットリストを index.html に足す。
 # 手で走らせるときは Actions の画面から。そのときは既定で「下見だけ」なので、
 # 何も書き換わらない。本番にしたいときだけ apply を true にする。
+#
+# audit を true にすると、メンバーごとのページを全部見て
+# 「ホロ曲DBにあって、こちらに無い曲」を洗い出す（報告だけ。何も書き換えない）。
+# 80ページ取りに行くので5分ほどかかる。毎週やる必要はない。
 name: weekly
 
 on:
@@ -12,6 +16,10 @@ on:
     inputs:
       apply:
         description: '実際に書き換える（falseなら下見だけ）'
+        type: boolean
+        default: false
+      audit:
+        description: '全曲の棚卸しをする（報告だけ。更新はしない）'
         type: boolean
         default: false
 
@@ -31,8 +39,10 @@ jobs:
       - name: 更新する
         id: run
         run: |
-          # 定期実行のときは必ず本番。手動のときは指定に従う。
-          if [ "${{ github.event_name }}" = "schedule" ] \
+          if [ "${{ inputs.audit }}" = "true" ]; then
+            echo "::notice::棚卸しモード（何も書き換えない）"
+            python3 tools/update.py --audit
+          elif [ "${{ github.event_name }}" = "schedule" ] \
              || [ "${{ inputs.apply }}" = "true" ]; then
             echo "::notice::本番モード（index.html を書き換える）"
             python3 tools/update.py --apply
