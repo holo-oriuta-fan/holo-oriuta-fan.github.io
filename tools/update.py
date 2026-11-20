@@ -490,6 +490,47 @@ def parse_talent(html):
     return out, way, sample
 
 
+def song_detail(sid, vid=""):
+    """
+    曲ごとのページから公開日を取る。
+    ページには出来事が日付つきで並んでいる（MV投稿・フル投稿・配信開始など）。
+    その曲の動画IDが載っている行の日付を最優先。無ければ一番古い日付。
+    返すのは (日付, 診断文)。
+    """
+    try:
+        page = fetch(BASE + "/song/%s/" % sid)
+    except Exception as e:
+        return "", _why(e)
+    body = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", page)
+    # 「ほかの曲」などの後ろは見ない
+    for mark in ('id="others"', "関連する曲", "同じ", "ほかの"):
+        i = body.find(mark, 2000)
+        if i > 0:
+            body = body[:i]
+            break
+
+    DATE = re.compile(r"(20\d\d)[/.-](\d{1,2})[/.-](\d{1,2})")
+    found = []
+    for m in re.finditer(r"(?is)<li\b[^>]*>(.*?)</li>", body):
+        chunk = m.group(1)
+        d = DATE.search(strip_tags(chunk))
+        if not d:
+            continue
+        iso = "%s-%02d-%02d" % (d.group(1), int(d.group(2)), int(d.group(3)))
+        found.append((iso, vid and (vid in chunk)))
+    if not found:
+        for d in DATE.finditer(strip_tags(body)):
+            found.append(("%s-%02d-%02d"
+                          % (d.group(1), int(d.group(2)), int(d.group(3))), False))
+
+    hit = [f[0] for f in found if f[1]]
+    best = hit[0] if hit else (min(f[0] for f in found) if found else "")
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    if best and not ("2016-01-01" <= best <= today):
+        return "", "ありえない日付 %s" % best
+    return best, ("動画IDの行から" if hit else ("一番古い日付 / 候補%d件" % len(found)))
+
+
 def audit_talents(data, apply=False, loud=True):
     """
     メンバーごとのページを全部見て、ホロ曲DBにあってこちらに無い曲を洗い出す。
@@ -634,6 +675,25 @@ def audit_talents(data, apply=False, loud=True):
             print("        %-44s ← %s" % (e["t"][:44], "・".join(e["who"])[:20]))
         if len(cats[c]) > 6:
             print("        …ほか %d件" % (len(cats[c]) - 6))
+
+    # ── 公開日が取れるか試す ──
+    pool = [(sid, e) for sid, e in rest.items() if e["v"]]
+    n_try = len(pool) if apply else min(25, len(pool))
+    if n_try:
+        print()
+        print("  ── 曲ごとのページから公開日を取る（%d件）──" % n_try)
+        got = 0
+        for sid, e in sorted(pool, key=lambda x: x[1]["t"])[:n_try]:
+            d, why = song_detail(sid, e["v"])
+            time.sleep(1.2)
+            e["d"] = d
+            if d:
+                got += 1
+            if got <= 12 or not d:
+                print("     %-40s %s  （%s）" % (e["t"][:40], d or "取れない", why))
+        print("     取れた: %d / %d件" % (got, n_try))
+        if not apply:
+            print("     ※ 下見なので最初の%d件だけ試しました" % n_try)
     return folded + alt
 
 
