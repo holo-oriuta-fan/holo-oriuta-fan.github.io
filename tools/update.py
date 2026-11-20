@@ -531,7 +531,7 @@ def song_detail(sid, vid=""):
     return best, ("動画IDの行から" if hit else ("一番古い日付 / 候補%d件" % len(found)))
 
 
-def audit_talents(data, apply=False, loud=True):
+def audit_talents(data, known_ch, mem_branch, mem_scope, apply=False, loud=True):
     """
     メンバーごとのページを全部見て、ホロ曲DBにあってこちらに無い曲を洗い出す。
     apply のときだけ、ソロバージョンを本体の曲に畳む（それ以外は書き換えない）。
@@ -556,9 +556,10 @@ def audit_talents(data, apply=False, loud=True):
     for x in songs:
         if x.get("v"):
             have_v.add(x["v"])
-        for e in (x.get("sv") or []):
-            if e.get("v"):
-                have_v.add(e["v"])
+        for key in ("sv", "av"):          # 畳んだソロ版・別バージョンも持っている扱い
+            for e in (x.get(key) or []):
+                if e.get("v"):
+                    have_v.add(e["v"])
 
     miss, total, novid = {}, 0, 0
     for n, tid in enumerate(ids, 1):
@@ -676,25 +677,63 @@ def audit_talents(data, apply=False, loud=True):
         if len(cats[c]) > 6:
             print("        …ほか %d件" % (len(cats[c]) - 6))
 
-    # ── 公開日が取れるか試す ──
+    # ── 残りの曲を足す ──
     pool = [(sid, e) for sid, e in rest.items() if e["v"]]
+    novid_list = [e for sid, e in rest.items() if not e["v"]]
     n_try = len(pool) if apply else min(25, len(pool))
+    added, held, nodate = [], [], []
     if n_try:
         print()
-        print("  ── 曲ごとのページから公開日を取る（%d件）──" % n_try)
-        got = 0
+        print("  ── 曲ごとのページから公開日を取り、足す（%d件）──" % n_try)
+        roster = {r["name"] for r in data.get("roster", [])}
+        shown = 0
         for sid, e in sorted(pool, key=lambda x: x[1]["t"])[:n_try]:
             d, why = song_detail(sid, e["v"])
-            time.sleep(1.2)
-            e["d"] = d
-            if d:
-                got += 1
-            if got <= 12 or not d:
-                print("     %-40s %s  （%s）" % (e["t"][:40], d or "取れない", why))
-        print("     取れた: %d / %d件" % (got, n_try))
-        if not apply:
-            print("     ※ 下見なので最初の%d件だけ試しました" % n_try)
-    return folded + alt
+            time.sleep(1.0)
+            if not d:
+                nodate.append((e["t"], why))
+                continue
+            ch = channel_of(e["v"])
+            time.sleep(0.4)
+            ok = (ch in known_ch) or ch.endswith(" - Topic")
+            if not ok:
+                held.append((e["t"], ch))
+                continue
+            mem = [w for w in e["who"] if w in roster]
+            if not mem:
+                held.append((e["t"], "歌った人が分からない（%s）" % "・".join(e["who"])[:24]))
+                continue
+            br, sc = [], []
+            for mm in mem:
+                b = mem_branch.get(mm)
+                if b and b not in br:
+                    br.append(b)
+                sc.append(mem_scope.get(mm, "jp"))
+            rec = {"d": d, "t": e["t"], "a": "", "m": mem, "g": [], "b": br,
+                   "s": (sc[0] if sc else "jp"), "v": e["v"], "n": len(mem),
+                   "c": 0, "o": 1 if len(mem) == 1 else 0, "w": 0, "ch": ch}
+            added.append(rec)
+            shown += 1
+            if shown <= 15:
+                print("     ○ %s  %-36s %s"
+                      % (d, e["t"][:36], "・".join(mem)[:26]))
+        if len(added) > 15:
+            print("     …ほか %d件" % (len(added) - 15))
+        print("     足せる: %d件 / 公開日が取れない: %d件 / 保留: %d件"
+              % (len(added), len(nodate), len(held)))
+        for t, why in nodate[:8]:
+            print("       日付なし: %-34s （%s）" % (t[:34], why))
+        for t, why in held[:8]:
+            print("       保留: %-34s （%s）" % (t[:34], why))
+        if novid_list:
+            print("     動画IDが無いので見送り: %d件" % len(novid_list))
+        if apply and added:
+            data["songs"].extend(added)
+            data["songs"].sort(key=lambda x: x.get("d") or "", reverse=True)
+            print("     → %d曲を足しました" % len(added))
+        elif not apply:
+            print("     ※ 下見なので最初の%d件だけ試しました（足していません）" % n_try)
+    return folded + alt + added
 
 
 # ───────────────── フェスのセットリスト ─────────────────
@@ -1073,16 +1112,18 @@ def main():
     # 本体に畳んだソロ版の動画IDも「持っている」と見なす。
     # そうしないと毎週また拾ってきて、毎週また畳む、の繰り返しになる。
     for s in songs:
-        for e in (s.get("sv") or []):
-            if e.get("v"):
-                by_vid.setdefault(e["v"], s)
+        for key in ("sv", "av"):
+            for e in (s.get(key) or []):
+                if e.get("v"):
+                    by_vid.setdefault(e["v"], s)
     by_title = {}
     for s in songs:
         by_title.setdefault(norm(s["t"]), []).append(s)
 
     if args.audit:
         print("\n[棚卸し] メンバーごとのページを全部見る")
-        folded = audit_talents(data, apply=args.apply)
+        folded = audit_talents(data, known_ch, mem_branch, mem_scope,
+                               apply=args.apply)
         if not args.apply:
             print("\n棚卸しだけなので、ファイルは書き換えていません。")
             print("（ソロバージョンを実際に畳むには、"
@@ -1091,10 +1132,13 @@ def main():
         if not folded:
             print("\n畳むものが無かったので、書き換えていません。")
             return 0
-        recount(data)
+        fix_solo_flags(data)
+        fix_roster(data, mem_branch, mem_info)
+        m = recount(data)
         write_data(args.file, src, j, k, data)
-        print("\n%s を書き換えました。ソロバージョン %d件を本体に畳みました。"
-              % (args.file, len(folded)))
+        print("\n%s を書き換えました。" % args.file)
+        print("  合計 %d曲 / ソロ %d / グループ %d"
+              % (m["total"], m["solos"], m["groups"]))
         return 0
 
     # ── 1. ホロ曲DB の最新50曲を見る ──
