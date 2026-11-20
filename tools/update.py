@@ -427,6 +427,34 @@ def split_solo(title, members):
     return None, None
 
 
+ALT_WORDS = re.compile(
+    r"(?i)remix|リミックス|acapella|アカペラ|instrumental|ver\.|version|"
+    r"arrange|アレンジ|edit|mix|english|japanese|indonesian|korean|"
+    r"英語|日本語|\blive\b")
+
+
+def split_alt(title):
+    """
+    「○○ - Eurobeat Remix」「○○ (English ver.)」「○○ -Far East Remix-」
+    「Creating world 2020ver.」から、本体の曲名と見出し文字を取り出す。
+    当てはまらなければ (None, None)。
+    """
+    cands = []
+    m = re.search(r"\s*[(（]([^()（）]+)[)）]\s*$", title)
+    if m:
+        cands.append((title[:m.start()].strip(), m.group(1).strip()))
+    m = re.search(r"\s*[-－—]\s*([^-－—]+?)\s*[-－—]?\s*$", title)
+    if m:
+        cands.append((title[:m.start()].strip(), m.group(1).strip()))
+    m = re.search(r"\s+(\d{4}\s*ver\.?)\s*$", title, re.I)
+    if m:
+        cands.append((title[:m.start()].strip(), m.group(1).strip()))
+    for base, label in cands:
+        if base and label and ALT_WORDS.search(label):
+            return base, label
+    return None, None
+
+
 def parse_talent(html):
     """
     メンバーのページから、その人の曲を全部拾う。
@@ -445,14 +473,17 @@ def parse_talent(html):
         if sid in seen:
             continue
         if not sample and len(inner) > 60:
-            sample = re.sub(r"\s+", " ", m.group(0))[:420]
+            sample = re.sub(r"\s+", " ", m.group(0))[:900]
         t = TEXT_SM.search(inner)
         title = clean_song_title(strip_tags(t.group(2)) if t else strip_tags(inner))
         if not title:
             continue
         v = re.search(r'img\.youtube\.com/vi/([A-Za-z0-9_-]{11})/', inner)
+        dm = re.search(r"(20\d\d)[/.-](\d{1,2})[/.-](\d{1,2})", strip_tags(inner))
         seen.add(sid)
-        out.append({"id": sid, "t": title, "v": v.group(1) if v else ""})
+        out.append({"id": sid, "t": title, "v": v.group(1) if v else "",
+                    "d": ("%s-%02d-%02d" % (dm.group(1), int(dm.group(2)), int(dm.group(3))))
+                         if dm else ""})
 
     way = "%d件（曲名の取り方: %s）" % (
         len(out), "text-sm" if TEXT_SM.search(body) else "リンクの文字そのまま")
@@ -511,7 +542,8 @@ def audit_talents(data, apply=False, loud=True):
                 novid += 1
             if norm(g["t"]) in by_title:
                 continue
-            e = miss.setdefault(g["id"], {"t": g["t"], "v": g["v"], "who": []})
+            e = miss.setdefault(g["id"],
+                                {"t": g["t"], "v": g["v"], "d": g.get("d", ""), "who": []})
             if who not in e["who"]:
                 e["who"].append(who)
 
@@ -536,6 +568,23 @@ def audit_talents(data, apply=False, loud=True):
                 sv.append({"n": person, "v": e["v"]})
         folded.append((e["t"], host["t"], person))
 
+    # ── 別バージョン（リミックス・言語ちがいなど）を本体に畳む ──
+    alt, alt_orphan = [], {}
+    for sid, e in list(rest.items()):
+        base, label = split_alt(e["t"])
+        if not (base and label):
+            continue
+        host = by_title.get(norm(base))
+        if not host:
+            alt_orphan[sid] = e
+            continue
+        if apply:
+            av = host.setdefault("av", [])
+            if not any(x.get("v") == e["v"] for x in av):
+                av.append({"n": label, "v": e["v"]})
+        alt.append((e["t"], host["t"], label))
+        del rest[sid]
+
     print("  ── ソロバージョン: %d件 ──" % (len(folded) + len(orphan)))
     for t, h, person in sorted(folded):
         print("     %s %-44s → %s（%s）"
@@ -547,6 +596,17 @@ def audit_talents(data, apply=False, loud=True):
             if h.get("sv"):
                 order = {nm: i for i, nm in enumerate(h.get("m") or [])}
                 h["sv"].sort(key=lambda x: order.get(x["n"], 99))
+    print()
+    print("  ── 別バージョン（リミックス・言語ちがいなど）: %d件 ──" % len(alt))
+    for t, h, label in sorted(alt)[:40]:
+        print("     %s %-40s → %s（%s）"
+              % ("畳んだ" if apply else "畳める", t[:40], h[:22], label[:20]))
+    if len(alt) > 40:
+        print("     …ほか %d件" % (len(alt) - 40))
+    if alt_orphan:
+        print("     本体が無いので見送り: %d件" % len(alt_orphan))
+        for e in list(alt_orphan.values())[:6]:
+            print("        %s" % e["t"][:48])
     print()
 
     # ── 残り。種類ごとに数える ──
@@ -565,14 +625,16 @@ def audit_talents(data, apply=False, loud=True):
     for sid, e in rest.items():
         cats.setdefault(kind(e["t"]), []).append(e)
 
-    print("  ── そのほか、こちらに無い曲: %d件 ──" % len(rest))
+    withd = sum(1 for e in rest.values() if e.get("d"))
+    print("  ── そのほか、こちらに無い曲: %d件（うち公開日が取れた: %d件） ──"
+          % (len(rest), withd))
     for c in sorted(cats, key=lambda c: -len(cats[c])):
         print("     %-34s %4d件" % (c, len(cats[c])))
         for e in sorted(cats[c], key=lambda x: x["t"])[:6]:
             print("        %-44s ← %s" % (e["t"][:44], "・".join(e["who"])[:20]))
         if len(cats[c]) > 6:
             print("        …ほか %d件" % (len(cats[c]) - 6))
-    return folded
+    return folded + alt
 
 
 # ───────────────── フェスのセットリスト ─────────────────
@@ -829,7 +891,7 @@ def fold_solo_versions(data, loud=True):
         if h.get("sv"):
             order = {n: i for i, n in enumerate(h.get("m") or [])}
             h["sv"].sort(key=lambda e: order.get(e["n"], 99))
-    return folded
+    return folded + alt
 
 
 def fix_roster(data, mem_branch, mem_info, loud=True):
