@@ -1052,12 +1052,13 @@ function rowFor(s) {
 
   wrap.appendChild(ml);
 
-  /* 人の名前が入った別バージョン（「◯◯ SOLO ver.」など）は曲を分けず、
-     この行の中に並べる。押すと、その子だけが歌っている動画が開く。 */
-  if (s.sv && s.sv.length) {
-    const sv = el("div", "svlinks");
-    sv.appendChild(el("span", "svlab", "ソロ版"));
-    s.sv.forEach(x => {
+  /* 同じ曲の別バージョンは曲を分けず、この行の中に並べる。
+     sv = 人の名前が入ったソロ版 / av = リミックスや言語ちがい。 */
+  const vrow = (label, list) => {
+    if (!list || !list.length) return;
+    const row = el("div", "svlinks");
+    row.appendChild(el("span", "svlab", label));
+    list.forEach(x => {
       const b = el("a", "mlink sv");
       b.href = "https://youtu.be/" + x.v;
       b.target = "_blank";
@@ -1065,10 +1066,12 @@ function rowFor(s) {
       b.title = s.t + "（" + x.n + "）をYouTubeで開く";
       b.appendChild(el("span", "mico", "\u25B6"));
       b.appendChild(document.createTextNode(x.n));
-      sv.appendChild(b);
+      row.appendChild(b);
     });
-    wrap.appendChild(sv);
-  }
+    wrap.appendChild(row);
+  };
+  vrow("ソロ版", s.sv);
+  vrow("別バージョン", s.av);
   return wrap;
 }
 
