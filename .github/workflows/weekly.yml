@@ -40,8 +40,13 @@ jobs:
         id: run
         run: |
           if [ "${{ inputs.audit }}" = "true" ]; then
-            echo "::notice::棚卸しモード（何も書き換えない）"
-            python3 tools/update.py --audit
+            if [ "${{ inputs.apply }}" = "true" ]; then
+              echo "::notice::棚卸し＋ソロバージョンを畳む（書き換える）"
+              python3 tools/update.py --audit --apply
+            else
+              echo "::notice::棚卸しモード（何も書き換えない）"
+              python3 tools/update.py --audit
+            fi
           elif [ "${{ github.event_name }}" = "schedule" ] \
              || [ "${{ inputs.apply }}" = "true" ]; then
             echo "::notice::本番モード（index.html を書き換える）"
