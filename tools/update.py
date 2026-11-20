@@ -52,6 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS_OK = os.path.join(HERE, "channels-ok.txt")
 MEMBERS_TXT = os.path.join(HERE, "members.txt")
 UNITS_TXT = os.path.join(HERE, "units.txt")
+KEEP_TXT = os.path.join(HERE, "keep-separate.txt")
 
 MAX_UTANET_NEW = 40      # 新曲の歌詞リンク探し
 MAX_UTANET_FILL = 35     # 既存曲の歌詞リンク埋め戻し
@@ -433,26 +434,39 @@ ALT_WORDS = re.compile(
     r"英語|日本語|\blive\b")
 
 
+def alt_candidates(title):
+    """
+    「○○ - Eurobeat Remix」「○○ (English ver.)」「いのち Acoustic ver.」から、
+    本体の曲名と見出し文字の候補を並べて返す。
+
+    1つに決め打ちすると間違える。たとえば
+    「Everlasting knife Lo-fi ver.」はハイフンで割ると
+    本体が「Everlasting knife Lo」になってしまう。
+    候補を全部出して、本体が実在するものを呼び出し側に選ばせる。
+    """
+    out = []
+    # 短くて確かな切り方から順に試す。長く切ると本体まで削ってしまう。
+    pats = [
+        r"\s*[(（]([^()（）]+)[)）]\s*$",              # 末尾のカッコ
+        r"\s+(\S+\s*ver\.?)\s*$",                   # 「… Lo-fi ver.」1語
+        r"\s+(\S*\s*remix)\s*$",                    # 「… remix」
+        r"\s*[-－–—]\s*([^-－–—]+?)\s*[-－–—]?\s*$",   # 末尾の区切り線
+        r"\s+((?:\S+\s+)?\S*\s*ver\.?)\s*$",       # 「… Acoustic ver.」2語
+    ]
+    for pat in pats:
+        m = re.search(pat, title, re.I)
+        if not m:
+            continue
+        base, label = title[:m.start()].strip(), m.group(1).strip()
+        if base and label and ALT_WORDS.search(label) and (base, label) not in out:
+            out.append((base, label))
+    return out
+
+
 def split_alt(title):
-    """
-    「○○ - Eurobeat Remix」「○○ (English ver.)」「○○ -Far East Remix-」
-    「Creating world 2020ver.」から、本体の曲名と見出し文字を取り出す。
-    当てはまらなければ (None, None)。
-    """
-    cands = []
-    m = re.search(r"\s*[(（]([^()（）]+)[)）]\s*$", title)
-    if m:
-        cands.append((title[:m.start()].strip(), m.group(1).strip()))
-    m = re.search(r"\s*[-－—]\s*([^-－—]+?)\s*[-－—]?\s*$", title)
-    if m:
-        cands.append((title[:m.start()].strip(), m.group(1).strip()))
-    m = re.search(r"\s+(\d{4}\s*ver\.?)\s*$", title, re.I)
-    if m:
-        cands.append((title[:m.start()].strip(), m.group(1).strip()))
-    for base, label in cands:
-        if base and label and ALT_WORDS.search(label):
-            return base, label
-    return None, None
+    """候補のうち最初のもの。本体が実在するかは見ない。"""
+    c = alt_candidates(title)
+    return c[0] if c else (None, None)
 
 
 def parse_talent(html):
@@ -613,11 +627,16 @@ def audit_talents(data, known_ch, mem_branch, mem_scope, apply=False, loud=True)
     # ── 別バージョン（リミックス・言語ちがいなど）を本体に畳む ──
     alt, alt_orphan = [], {}
     for sid, e in list(rest.items()):
-        base, label = split_alt(e["t"])
-        if not (base and label):
+        cands = alt_candidates(e["t"])
+        if not cands:
             continue
-        host = by_title.get(norm(base))
-        if not host:
+        host = label = None
+        for base, lb in cands:
+            h = by_title.get(norm(base))
+            if h:
+                host, label = h, lb
+                break
+        if host is None:
             alt_orphan[sid] = e
             continue
         if apply:
@@ -991,6 +1010,44 @@ def fold_solo_versions(data, loud=True):
             order = {n: i for i, n in enumerate(h.get("m") or [])}
             h["sv"].sort(key=lambda e: order.get(e["n"], 99))
     return folded + alt
+
+
+def fold_alt_versions(data, loud=True):
+    """
+    既に1曲として入っている別バージョンを、本体の行の下に畳む。
+    keep-separate.txt に書いた曲は畳まない。
+    何度走らせても同じ結果になる。
+    """
+    keep = {norm(x) for x in read_config_lines(KEEP_TXT)}
+    songs = data["songs"]
+    by_title = {}
+    for x in songs:
+        by_title.setdefault(norm(x["t"]), []).append(x)
+
+    done = []
+    for x in list(songs):
+        if norm(x["t"]) in keep:
+            continue
+        host = label = None
+        for base, lb in alt_candidates(x["t"]):
+            h = next((h for h in by_title.get(norm(base), []) if h is not x), None)
+            if h is not None:
+                host, label = h, lb
+                break
+        if host is None:
+            continue
+        av = host.setdefault("av", [])
+        if not any(e.get("v") == x["v"] for e in av):
+            av.append({"n": label[:40], "v": x["v"]})
+        songs.remove(x)
+        by_title[norm(x["t"])].remove(x)
+        done.append((x["t"], host["t"], label))
+        if loud:
+            print("  畳んだ: %-44s → %s（%s）"
+                  % (x["t"][:44], host["t"][:24], label[:24]))
+    if loud and keep:
+        print("  ※ 畳まずに残した指定: %d件" % len(keep))
+    return done
 
 
 def fix_roster(data, mem_branch, mem_info, loud=True):
@@ -1370,6 +1427,7 @@ def main():
 
     print("\n[7] 同じ曲の別バージョンを畳む")
     folded = fold_solo_versions(data)
+    folded += fold_alt_versions(data)
     if not folded:
         print("  畳むものなし")
 
