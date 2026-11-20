@@ -395,42 +395,55 @@ def itunes_lookup(title, members):
 
 # ───────────────── 全曲の棚卸し ─────────────────
 
+def clean_song_title(t):
+    """
+    メンバーのページでは、曲名の後ろに再生数や順位がくっついて出る。
+      「All for One  302万 3」→「All for One」
+    これを落とす。末尾が数字で終わる曲名（Dear you 128√e980 など）は
+    手前に空白＋数字の並びが無いので、巻き込まない。
+    """
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+\d[\d,]*\s*(万|億)?\s*(再生)?\s*\d*\s*$", "", t).strip()
+    return t
+
+
 def parse_talent(html):
     """
     メンバーのページから、その人の曲を全部拾う。
-    曲一覧ページと同じ作りなら sl-row で取れる。違っていたときのために、
-    曲ページへのリンクから拾う方法も用意して、どちらで取れたかを出す。
-    返すのは ([{"id":…, "t":…, "v":…}], 診断文)。
+    曲ページへのリンク1つぶんの中から、曲名・動画IDを取り出す。
+    返すのは ([{"id":…, "t":…, "v":…}], 診断文, 生の見本)。
     """
     body = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
     out, seen = [], set()
+    sample = ""
 
-    rows = parse_list(body)          # 曲一覧と同じ作りを試す
-    for r in rows:
-        if r["song_id"] and r["song_id"] not in seen:
-            seen.add(r["song_id"])
-            out.append({"id": r["song_id"], "t": r["t"], "v": r["v"]})
-    way = "sl-row %d件" % len(out)
+    TEXT_SM = re.compile(
+        r'(?is)<(span|div|h\d)[^>]*class="[^"]*\btext-sm\b[^"]*"[^>]*>(.*?)</\1>')
 
-    if not out:
-        # 作りが違うとき: 曲ページへのリンクと、その中の文字から拾う
-        for m in re.finditer(
-                r'(?is)<a[^>]*href="/song/(\d+)/"[^>]*>(.*?)</a>', body):
-            sid, inner = m.group(1), m.group(2)
-            t = strip_tags(inner)
-            if not t or sid in seen:
-                continue
-            seen.add(sid)
-            out.append({"id": sid, "t": t, "v": ""})
-        way += " / リンクから %d件" % len(out)
+    for m in re.finditer(r'(?is)<a[^>]*href="/song/(\d+)/"[^>]*>(.*?)</a>', body):
+        sid, inner = m.group(1), m.group(2)
+        if sid in seen:
+            continue
+        if not sample and len(inner) > 60:
+            sample = re.sub(r"\s+", " ", m.group(0))[:420]
+        t = TEXT_SM.search(inner)
+        title = clean_song_title(strip_tags(t.group(2)) if t else strip_tags(inner))
+        if not title:
+            continue
+        v = re.search(r'img\.youtube\.com/vi/([A-Za-z0-9_-]{11})/', inner)
+        seen.add(sid)
+        out.append({"id": sid, "t": title, "v": v.group(1) if v else ""})
 
-    return out, way
+    way = "%d件（曲名の取り方: %s）" % (
+        len(out), "text-sm" if TEXT_SM.search(body) else "リンクの文字そのまま")
+    return out, way, sample
 
 
 def audit_talents(data, loud=True):
     """
     メンバーごとのページを全部見て、ホロ曲DBにあってこちらに無い曲を洗い出す。
     何も書き換えない。報告だけ。
+    突き合わせは動画IDを最優先。無いときだけ曲名で見る。
     """
     print("  メンバーの一覧を取りに行く …")
     try:
@@ -446,16 +459,16 @@ def audit_talents(data, loud=True):
 
     songs = data["songs"]
     have_t = {norm(x["t"]) for x in songs}
-    for x in songs:                       # 畳んだソロ版も「持っている」
-        for e in (x.get("sv") or []):
-            pass
-    have_v = {x["v"] for x in songs if x.get("v")}
+    have_v = set()
     for x in songs:
+        if x.get("v"):
+            have_v.add(x["v"])
         for e in (x.get("sv") or []):
             if e.get("v"):
                 have_v.add(e["v"])
 
-    missing, ways, total = {}, {}, 0
+    miss = {}        # 曲ID → {"t":…, "v":…, "who":[…]}
+    total, novid, shown = 0, 0, False
     for n, tid in enumerate(ids, 1):
         try:
             page = fetch(BASE + "/talent/%s/" % tid)
@@ -463,40 +476,53 @@ def audit_talents(data, loud=True):
             print("  !! /talent/%s/ … %s" % (tid, _why(e)))
             continue
         time.sleep(1.5)
-        got, way = parse_talent(page)
-        ways[way.split()[0]] = ways.get(way.split()[0], 0) + 1
+        got, way, sample = parse_talent(page)
         m = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", page)
         who = strip_tags(m.group(1)) if m else ("talent/" + tid)
+        who = re.sub(r"[（(].*?[）)]", "", who)
         who = re.sub(r"\s*(の楽曲|の曲).*$", "", who).strip()
         total += len(got)
-        if n <= 3 or not got:
-            print("  %-22s %d曲（%s）" % (who[:22], len(got), way))
+        if n <= 2 or not got:
+            print("  %-16s %s" % (who[:16], way))
+            if sample and not shown:
+                print("     リンク1つの実物 → %s" % sample)
+                shown = True
         for g in got:
-            if norm(g["t"]) in have_t:
+            if g["v"]:
+                if g["v"] in have_v:
+                    continue
+            else:
+                novid += 1
+                if norm(g["t"]) in have_t:
+                    continue
+            if g["v"] and norm(g["t"]) in have_t:
                 continue
-            if g["v"] and g["v"] in have_v:
-                continue
-            missing.setdefault(g["t"], []).append(who)
+            e = miss.setdefault(g["id"], {"t": g["t"], "v": g["v"], "who": []})
+            if who not in e["who"]:
+                e["who"].append(who)
 
-    print("  読んだ曲（のべ）: %d" % total)
-    print("  取り方の内訳: %s" % ways)
+    print("  読んだ曲（のべ）: %d / 動画IDが取れなかったもの: %d" % (total, novid))
     print()
+
     sv_like, other = [], []
-    for t in missing:
-        if re.search(r"(?i)[(（][^()（）]*(solo|ソロ)[^()（）]*[)）]|solo\s*ver", t):
-            sv_like.append(t)
+    for sid, e in miss.items():
+        if re.search(r"(?i)[(（][^()（）]*(solo|ソロ)[^()（）]*[)）]|[-－—]\s*\S+\s*solo",
+                     e["t"]):
+            sv_like.append((sid, e))
         else:
-            other.append(t)
+            other.append((sid, e))
 
     print("  ── ソロバージョンらしき曲: %d件 ──" % len(sv_like))
-    for t in sorted(sv_like):
-        print("     %s  ← %s" % (t, "・".join(dict.fromkeys(missing[t]))[:40]))
+    for sid, e in sorted(sv_like, key=lambda x: x[1]["t"]):
+        print("     %-46s v=%s  ← %s"
+              % (e["t"][:46], e["v"] or "なし", "・".join(e["who"])[:24]))
     print()
     print("  ── そのほか、こちらに無い曲: %d件 ──" % len(other))
-    for t in sorted(other)[:120]:
-        print("     %s  ← %s" % (t[:56], "・".join(dict.fromkeys(missing[t]))[:30]))
-    if len(other) > 120:
-        print("     …ほか %d件" % (len(other) - 120))
+    for sid, e in sorted(other, key=lambda x: x[1]["t"])[:150]:
+        print("     %-46s v=%s  ← %s"
+              % (e["t"][:46], e["v"] or "なし", "・".join(e["who"])[:24]))
+    if len(other) > 150:
+        print("     …ほか %d件" % (len(other) - 150))
 
 
 # ───────────────── フェスのセットリスト ─────────────────
